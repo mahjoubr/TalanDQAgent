@@ -80,58 +80,54 @@ class ApiClient {
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     try {
-      const headers: Record<string, string> = {
+      // Fix: Use HeadersInit type which is more flexible
+      const headers: HeadersInit = {
         ...options.headers,
       }
 
       // Only set Content-Type for non-FormData requests
       if (!(options.body instanceof FormData)) {
-        headers["Content-Type"] = "application/json"
+        (headers as Record<string, string>)["Content-Type"] = "application/json"
       }
 
       // Add session ID for Power BI requests
       if (this.sessionId && endpoint.includes("/powerbi/")) {
-        headers["X-Session-ID"] = this.sessionId
+        (headers as Record<string, string>)["X-Session-ID"] = this.sessionId
       }
 
-      // Always use mock data in development or when backend is unavailable
-      const isDevelopment = process.env.NODE_ENV === "development"
-      const shouldUseMock = isDevelopment || !this.baseUrl.includes("localhost")
+      // First, try to connect to the real backend
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
 
-      if (shouldUseMock) {
-        console.log("Using mock data for endpoint:", endpoint)
+      try {
+        const response = await fetch(`${this.baseUrl}${endpoint}`, {
+          ...options,
+          headers,
+          signal: controller.signal,
+        })
+
+        clearTimeout(timeoutId)
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.detail || `HTTP error! status: ${response.status}`)
+        }
+
+        const data = await response.json()
+        console.log("✅ Backend connected successfully")
+        return { success: true, data }
+      } catch (fetchError) {
+        clearTimeout(timeoutId)
+        console.warn("⚠️ Backend unavailable, using mock data:", fetchError)
         return this.getMockResponse<T>(endpoint, options)
       }
-
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 5000) // 5 second timeout
-
-      const response = await fetch(`${this.baseUrl}${endpoint}`, {
-        headers,
-        signal: controller.signal,
-        ...options,
-      }).catch((fetchError) => {
-        clearTimeout(timeoutId)
-        console.warn("Backend fetch failed, using mock data:", fetchError.message)
-        throw new Error("BACKEND_UNAVAILABLE")
-      })
-
-      clearTimeout(timeoutId)
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.detail || `HTTP error! status: ${response.status}`)
-      }
-
-      const data = await response.json()
-      return { success: true, data }
     } catch (error) {
-      console.log("API request failed, falling back to mock data:", error)
+      console.log("❌ API request failed, falling back to mock data:", error)
       return this.getMockResponse<T>(endpoint, options)
     }
   }
 
-  private getMockResponse<T>(endpoint: string, options: RequestInit = {}): ApiResponse<T> {
+  private getMockResponse<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     // Simulate network delay
     return new Promise((resolve) => {
       setTimeout(() => {
@@ -174,6 +170,39 @@ class ApiClient {
               },
             ],
           },
+          // Power BI Mock Responses
+          "/api/powerbi/authenticate": {
+            session_id: `mock-session-${Date.now()}`,
+            expires_in: 3600,
+            message: "Successfully authenticated with Power BI (mock)"
+          },
+          "/api/powerbi/workspaces": {
+            workspaces: [
+              {
+                id: "workspace-1",
+                name: "Marketing Analytics",
+                isReadOnly: false,
+                isOnDedicatedCapacity: true
+              },
+              {
+                id: "workspace-2", 
+                name: "Sales Dashboard",
+                isReadOnly: false,
+                isOnDedicatedCapacity: false
+              },
+              {
+                id: "workspace-3",
+                name: "Financial Reports",
+                isReadOnly: true,
+                isOnDedicatedCapacity: true
+              }
+            ]
+          },
+          "/api/powerbi/embed-token": {
+            embed_token: "mock-embed-token-" + Date.now(),
+            embed_url: "https://app.powerbi.com/reportEmbed?reportId=mock-report&groupId=mock-workspace",
+            expires_at: new Date(Date.now() + 3600000).toISOString()
+          }
         }
 
         // Handle POST requests with query parameters
@@ -228,6 +257,86 @@ class ApiClient {
           return
         }
 
+        // Handle dynamic Power BI endpoints
+        if (endpoint.includes("/powerbi/workspaces/") && endpoint.includes("/reports")) {
+          const workspaceId = endpoint.split("/workspaces/")[1]?.split("/")[0]
+          resolve({
+            success: true,
+            data: {
+              reports: [
+                {
+                  id: `report-1-${workspaceId}`,
+                  name: "Customer Analytics Report",
+                  webUrl: "https://app.powerbi.com/reports/report-1",
+                  embedUrl: "https://app.powerbi.com/reportEmbed?reportId=report-1",
+                  datasetId: "dataset-1"
+                },
+                {
+                  id: `report-2-${workspaceId}`, 
+                  name: "Campaign Performance",
+                  webUrl: "https://app.powerbi.com/reports/report-2",
+                  embedUrl: "https://app.powerbi.com/reportEmbed?reportId=report-2",
+                  datasetId: "dataset-2"
+                }
+              ]
+            } as T
+          })
+          return
+        }
+
+        if (endpoint.includes("/powerbi/workspaces/") && endpoint.includes("/datasets")) {
+          const workspaceId = endpoint.split("/workspaces/")[1]?.split("/")[0]
+          resolve({
+            success: true,
+            data: {
+              datasets: [
+                {
+                  id: `dataset-1-${workspaceId}`,
+                  name: "Customer Data",
+                  addRowsAPIEnabled: true,
+                  configuredBy: "admin@company.com",
+                  isRefreshable: true
+                },
+                {
+                  id: `dataset-2-${workspaceId}`,
+                  name: "Marketing Campaigns",
+                  addRowsAPIEnabled: false, 
+                  configuredBy: "marketing@company.com",
+                  isRefreshable: true
+                }
+              ]
+            } as T
+          })
+          return
+        }
+
+        if (options.method === "POST" && endpoint.includes("/powerbi/datasets/") && endpoint.includes("/push-data")) {
+          resolve({
+            success: true,
+            data: {
+              records_pushed: 5,
+              message: "Data pushed to Power BI successfully (mock)"
+            } as T
+          })
+          return
+        }
+        
+        if (endpoint.includes("/powerbi/datasets/") && endpoint.includes("/data")) {
+          resolve({
+            success: true, 
+            data: {
+              connection_id: `mock-powerbi-${Date.now()}`,
+              message: "Power BI dataset data extracted successfully (mock)",
+              details: {
+                dataset_id: "mock-dataset-1",
+                record_count: 8500,
+                columns: ["date", "revenue", "customers", "region", "product_category"]
+              }
+            } as T
+          })
+          return
+        }
+
         const mockData = mockResponses[baseEndpoint] || mockResponses[endpoint]
 
         if (mockData) {
@@ -242,7 +351,7 @@ class ApiClient {
           })
         }
       }, 500) // Simulate 500ms delay
-    }) as Promise<ApiResponse<T>>
+    })
   }
 
   // Connection endpoints
