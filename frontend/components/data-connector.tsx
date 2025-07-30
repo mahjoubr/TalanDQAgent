@@ -17,9 +17,11 @@ import { apiClient } from "@/lib/api"
 interface DataConnectorProps {
   onDataConnected: (data: any) => void
   setIsLoading?: (loading: boolean) => void
+  onComplete?: (data: any) => void;
+  isCompleted?: boolean;
 }
 
-export function DataConnector({ onDataConnected, setIsLoading }: DataConnectorProps) {
+export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCompleted }: DataConnectorProps) {
   const [connectionString, setConnectionString] = useState("")
   const [dbType, setDbType] = useState("")
   const [isConnecting, setIsConnecting] = useState(false)

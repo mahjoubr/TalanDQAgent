@@ -2635,6 +2635,15 @@ video {
   --cell-size: var(--spacing(8));
 }
 
+:root {
+  --font-sans: var(--geist-sans);
+  --font-mono: var(--geist-mono);
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
 .file\:border-0::file-selector-button {
   border-width: 0px;
 }

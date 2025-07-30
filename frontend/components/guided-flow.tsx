@@ -25,9 +25,13 @@ interface GuidedFlowProps {
   onBack?: () => void
   onNavigateTo?: (view: "welcome" | "auth" | "guided" | "dashboard") => void
   canGoBack?: boolean
+  userData?: any
+  onComplete?: () => void
+  onViewDashboard: () => void
+
 }
 
-export function GuidedFlow({ onBack, onNavigateTo, canGoBack }: GuidedFlowProps) {
+export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComplete }: GuidedFlowProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [completedSteps, setCompletedSteps] = useState<number[]>([])
   const [stepData, setStepData] = useState<any>({})
@@ -73,7 +77,7 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack }: GuidedFlowProps)
   const canProceed = isStepCompleted || currentStep === 0
 
   const handleStepComplete = (data: any) => {
-    setStepData((prev) => ({ ...prev, [currentStep]: data }))
+    setStepData((prev: any) => ({ ...prev, [currentStep]: data }))
     if (!completedSteps.includes(currentStep)) {
       setCompletedSteps((prev) => [...prev, currentStep])
     }
@@ -227,8 +231,11 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack }: GuidedFlowProps)
                 <CurrentComponent
                   onComplete={handleStepComplete}
                   data={stepData[currentStep]}
-                  isCompleted={isStepCompleted}
-                />
+                  isCompleted={isStepCompleted} onDataConnected={function (data: any): void {
+                    throw new Error("Function not implemented.")
+                  } } setIsLoading={() => {}} onMetricsCalculated={function (metrics: any): void {
+                    throw new Error("Function not implemented.")
+                  } } qualityMetrics={undefined}                />
               </CardContent>
             </Card>
 

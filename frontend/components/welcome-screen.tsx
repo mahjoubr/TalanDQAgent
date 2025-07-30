@@ -105,9 +105,7 @@ export function WelcomeScreen({ onGetStarted, onViewDashboard }: WelcomeScreenPr
           <Card className="border-0 shadow-2xl bg-gradient-to-r from-blue-500 via-purple-500 to-cyan-500 text-white max-w-4xl mx-auto">
             <CardContent className="p-8">
               <h2 className="text-3xl font-bold mb-4">Ready to Transform Your Data Quality?</h2>
-              <p className="text-lg mb-8 text-blue-100">
-                Join thousands of organizations already using our platform to achieve data excellence
-              </p>
+              
 
               <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
                 <Button
@@ -120,41 +118,14 @@ export function WelcomeScreen({ onGetStarted, onViewDashboard }: WelcomeScreenPr
                   <ArrowRight className="ml-2 h-5 w-5" />
                 </Button>
 
-                <Button
-                  onClick={onViewDashboard}
-                  size="lg"
-                  variant="outline"
-                  className="border-2 border-white text-white hover:bg-white hover:text-blue-600 font-semibold px-8 py-4 text-lg shadow-xl hover:shadow-2xl transition-all duration-300 bg-transparent"
-                >
-                  <BarChart3 className="mr-2 h-5 w-5" />
-                  View Interactive Dashboard
-                  <ArrowRight className="ml-2 h-5 w-5" />
-                </Button>
+            
               </div>
             </CardContent>
           </Card>
 
-          {/* Stats */}
-          <div className="grid gap-6 md:grid-cols-3 max-w-3xl mx-auto">
-            <div className="text-center">
-              <div className="text-3xl font-bold text-blue-600 mb-2">99.9%</div>
-              <div className="text-sm text-gray-600">Data Accuracy</div>
-            </div>
-            <div className="text-center">
-              <div className="text-3xl font-bold text-purple-600 mb-2">10x</div>
-              <div className="text-sm text-gray-600">Faster Analysis</div>
-            </div>
-            <div className="text-center">
-              <div className="text-3xl font-bold text-cyan-600 mb-2">24/7</div>
-              <div className="text-sm text-gray-600">Real-time Monitoring</div>
-            </div>
-          </div>
+      
 
-          <div className="flex justify-center">
-            <Badge className="bg-gradient-to-r from-green-500 to-emerald-500 text-white px-4 py-2 text-sm">
-              ✨ Enterprise Ready • SOC 2 Compliant • 99.9% Uptime
-            </Badge>
-          </div>
+          
         </div>
       </div>
     </div>

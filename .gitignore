@@ -1,30 +1,45 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
-frontend/node_modules
+### Dependencies ###
+node_modules/          # Global node_modules (if any)
+frontend/node_modules/ # Frontend-specific node_modules
 
-# next.js
-/.next/
-/out/
+### Next.js ###
+.next/                # Next.js build cache
+out/                  # Static export output
+frontend/.next/       # Frontend-specific Next.js cache
+frontend/out/         # Frontend static export
 
-# production
-/build
+### Production ###
+build/                # Generic build folder
+frontend/build/       # Frontend-specific build
 
-# debug
+### Debug logs ###
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
-.env*
+### Environment ###
+.env*                 # All .env files
+.env.local            # Local overrides
 
-# vercel
-.vercel
+### Vercel ###
+.vercel/
 
-# typescript
+### TypeScript ###
 *.tsbuildinfo
 next-env.d.ts
 
-#virtual env
-venv/
+### Python ###
+venv/                 # Python virtual environment
+__pycache__/          # Python cache
+*.pyc                 # Compiled Python files
+
+### IDE ###
+.vscode/              # VSCode settings
+.idea/                # JetBrains IDE settings
+
+### System ###
+.DS_Store             # macOS metadata
+Thumbs.db             # Windows thumbnail cache

@@ -37,7 +37,10 @@ function AppContent() {
       )
 
     case "dashboard":
-      return <DashboardPage onBack={goBack} userData={userData} />
+      return <DashboardPage onBack={goBack}
+      userData={userData} connections={[]} analysisResults={undefined} onDataConnected={function (data: any): void {
+        throw new Error("Function not implemented.")
+      } } />
 
     default:
       return <WelcomeScreen onGetStarted={() => navigateTo("auth")} onViewDashboard={() => navigateTo("dashboard")} />

@@ -444,7 +444,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
             </TabsContent>
           </Tabs>
 
-          {/* Social Authentication */}
+          {/* Social Authentication 
           <div className="mt-6">
             <div className="relative">
               <div className="absolute inset-0 flex items-center">
@@ -493,15 +493,9 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                 GitHub
               </Button>
             </div>
-          </div>
+          </div>*/}
 
-          {/* Security Notice */}
-          <div className="mt-6 p-3 bg-blue-50 rounded-lg border border-blue-200">
-            <p className="text-xs text-blue-800">
-              🔒 Your data is protected with enterprise-grade security. We comply with SOC 2, GDPR, and industry best
-              practices.
-            </p>
-          </div>
+        
         </CardContent>
       </Card>
     </div>

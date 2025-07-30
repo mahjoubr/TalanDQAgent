@@ -10,6 +10,13 @@ import { Activity, Wifi, WifiOff, Pause, Play, RotateCcw, TrendingUp, AlertCircl
 
 interface RealTimeDashboardProps {
   isConnected: boolean
+  
+  connections: Array<{
+    id: string
+    name: string
+    status: "connected" | "disconnected"
+  }>
+  analysisResults: any
   onToggleConnection: (connected: boolean) => void
 }
 

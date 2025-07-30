@@ -12,6 +12,8 @@ import { DevelopmentBanner } from "@/components/development-banner"
 
 interface DashboardPageProps {
   connections: any[]
+    userData: any
+
   analysisResults: any
   onDataConnected: (data: any) => void
   onBack?: () => void
@@ -23,6 +25,7 @@ export function DashboardPage({
   connections,
   analysisResults,
   onDataConnected,
+  
   onBack,
   onNavigateTo,
   canGoBack,
@@ -238,7 +241,9 @@ export function DashboardPage({
           )}
 
           {activeTab === "realtime" && (
-            <RealTimeDashboard connections={connections} analysisResults={analysisResults} />
+            <RealTimeDashboard connections={connections} analysisResults={analysisResults} isConnected={false} onToggleConnection={function (connected: boolean): void {
+              throw new Error("Function not implemented.")
+            } } />
           )}
 
           {activeTab === "connections" && (
