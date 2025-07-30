@@ -43,3 +43,7 @@ __pycache__/          # Python cache
 ### System ###
 .DS_Store             # macOS metadata
 Thumbs.db             # Windows thumbnail cache
+
+frontend/node_modules/
+frontend/.next/
+backend/venv/
