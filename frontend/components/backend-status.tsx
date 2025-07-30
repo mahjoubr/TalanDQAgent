@@ -13,10 +13,15 @@ export function BackendStatus() {
 
   const checkBackendStatus = async () => {
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/health`, {
         method: "GET",
-        timeout: 5000,
+        signal: controller.signal,
       })
+
+      clearTimeout(timeoutId)
 
       if (response.ok) {
         setStatus("connected")

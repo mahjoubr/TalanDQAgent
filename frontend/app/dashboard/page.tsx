@@ -6,7 +6,7 @@ import { apiClient } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
 
 export default function Dashboard() {
-  const [connections, setConnections] = useState([])
+  const [connections, setConnections] = useState<any[]>([])
   const [analysisResults, setAnalysisResults] = useState({})
   const [isLoading, setIsLoading] = useState(true)
   const { toast } = useToast()
@@ -69,6 +69,6 @@ export default function Dashboard() {
   }
 
   return (
-    <DashboardPage connections={connections} analysisResults={analysisResults} onDataConnected={handleDataConnected} />
+    <DashboardPage connections={connections} analysisResults={analysisResults} onDataConnected={handleDataConnected} userData={undefined} />
   )
 }
