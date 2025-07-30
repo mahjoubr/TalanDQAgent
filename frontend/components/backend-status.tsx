@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { CheckCircle, XCircle, AlertCircle } from "lucide-react"
 
 export function BackendStatus() {
-  const [status, setStatus] = useState<"checking" | "connected" | "disconnected" | "mock">("checking")
+  const [status, setStatus] = useState<"checking" | "connected" | "disconnected">("checking")
 
   useEffect(() => {
     checkBackendStatus()
@@ -29,12 +29,9 @@ export function BackendStatus() {
         setStatus("disconnected")
       }
     } catch (error) {
-      // In development, show mock status
-      if (process.env.NODE_ENV === "development") {
-        setStatus("mock")
-      } else {
+     
         setStatus("disconnected")
-      }
+      
     }
   }
 
@@ -46,12 +43,7 @@ export function BackendStatus() {
           text: "Backend Connected",
           className: "bg-green-100 text-green-800 border-green-200",
         }
-      case "mock":
-        return {
-          icon: AlertCircle,
-          text: "Using Mock Data",
-          className: "bg-yellow-100 text-yellow-800 border-yellow-200",
-        }
+      
       case "disconnected":
         return {
           icon: XCircle,

@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -10,15 +10,52 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { Database, Upload, FileText, CheckCircle, Zap, Server } from "lucide-react"
+import { Database, Upload, FileText, CheckCircle, Zap, Server, Trash2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { apiClient } from "@/lib/api"
+
+interface Connection {
+  id: string
+  type: "database" | "file"
+  dbType?: string
+  connectionString?: string
+  fileName?: string
+  fileSize?: number
+  status: string
+  tables?: string[]
+  recordCount?: number
+  columns?: string[]
+  createdAt: string
+}
 
 interface DataConnectorProps {
   onDataConnected: (data: any) => void
   setIsLoading?: (loading: boolean) => void
-  onComplete?: (data: any) => void;
-  isCompleted?: boolean;
+  onComplete?: (data: any) => void
+  isCompleted?: boolean
+}
+
+// Key for storing connections in memory
+const CONNECTIONS_KEY = 'dataConnectorConnections'
+
+// In-memory storage for connections (persists during session)
+let connectionsStorage: Connection[] = []
+
+// Helper functions for connection management
+const saveConnections = (connections: Connection[]) => {
+  connectionsStorage = [...connections]
+}
+
+const loadConnections = (): Connection[] => {
+  return [...connectionsStorage]
+}
+
+const addConnection = (connection: Connection) => {
+  connectionsStorage = [...connectionsStorage, connection]
+}
+
+const removeConnection = (connectionId: string) => {
+  connectionsStorage = connectionsStorage.filter(conn => conn.id !== connectionId)
 }
 
 export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCompleted }: DataConnectorProps) {
@@ -26,8 +63,39 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
   const [dbType, setDbType] = useState("")
   const [isConnecting, setIsConnecting] = useState(false)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
-  const [connections, setConnections] = useState<any[]>([])
+  const [connections, setConnections] = useState<Connection[]>([])
+  const [hasNotifiedParent, setHasNotifiedParent] = useState(false)
   const { toast } = useToast()
+
+  // Memoize the onDataConnected callback to prevent unnecessary re-renders
+  const stableOnDataConnected = useCallback((data: any) => {
+    if (onDataConnected) {
+      onDataConnected(data)
+    }
+  }, [onDataConnected])
+
+  // Load saved connections on component mount
+  useEffect(() => {
+    const savedConnections = loadConnections()
+    setConnections(savedConnections)
+    
+    // Only notify parent once and only if there are connections and we haven't notified yet
+    if (savedConnections.length > 0 && !hasNotifiedParent) {
+      // Notify about the most recent connection or create a summary
+      const summaryData = {
+        connectionCount: savedConnections.length,
+        connections: savedConnections,
+        lastConnection: savedConnections[savedConnections.length - 1]
+      }
+      stableOnDataConnected(summaryData)
+      setHasNotifiedParent(true)
+    }
+  }, [stableOnDataConnected, hasNotifiedParent])
+
+  // Save connections whenever they change
+  useEffect(() => {
+    saveConnections(connections)
+  }, [connections])
 
   const handleDatabaseConnect = async () => {
     if (!dbType || !connectionString) {
@@ -46,7 +114,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
       const response = await apiClient.connectDatabase(dbType, connectionString)
 
       if (response.success && response.data) {
-        const newConnection = {
+        const newConnection: Connection = {
           id: response.data.connection_id,
           type: "database",
           dbType,
@@ -54,63 +122,32 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
           status: "connected",
           tables: response.data.details.tables || [],
           recordCount: response.data.details.record_count,
+          createdAt: new Date().toISOString(),
         }
 
-        setConnections((prev) => [...prev, newConnection])
-        onDataConnected(newConnection)
+        setConnections((prev) => {
+          const updated = [...prev, newConnection]
+          addConnection(newConnection)
+          return updated
+        })
+
+        stableOnDataConnected(newConnection)
 
         toast({
           title: "Database Connected Successfully",
           description: response.data.message || "Connection established",
         })
-      } else {
-        // Handle API failure with mock data
-        const mockConnection = {
-          id: `mock-db-${Date.now()}`,
-          type: "database",
-          dbType,
-          connectionString: "Mock connection (backend unavailable)",
-          status: "connected",
-          tables: ["customers", "transactions", "products", "orders"],
-          recordCount: 10000,
-        }
 
-        setConnections((prev) => [...prev, mockConnection])
-        onDataConnected(mockConnection)
-
-        toast({
-          title: "Mock Database Connected",
-          description: "Using mock data - backend service unavailable",
-          variant: "default",
-        })
+        // Clear form after successful connection
+        setConnectionString("")
+        setDbType("")
       }
     } catch (error) {
-      // Fallback to mock data in development
-      if (process.env.NODE_ENV === "development") {
-        const mockConnection = {
-          id: `mock-db-${Date.now()}`,
-          type: "database",
-          dbType,
-          connectionString: "Mock connection (development mode)",
-          status: "connected",
-          tables: ["customers", "transactions", "products", "orders"],
-          recordCount: 10000,
-        }
-
-        setConnections((prev) => [...prev, mockConnection])
-        onDataConnected(mockConnection)
-
-        toast({
-          title: "Development Mode",
-          description: "Using mock database connection for development",
-        })
-      } else {
-        toast({
-          title: "Connection Failed",
-          description: error instanceof Error ? error.message : "Unknown error occurred",
-          variant: "destructive",
-        })
-      }
+      toast({
+        title: "Connection Failed",
+        description: error instanceof Error ? error.message : "Unknown error occurred",
+        variant: "destructive",
+      })
     } finally {
       setIsConnecting(false)
       setIsLoading?.(false)
@@ -128,7 +165,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
       const response = await apiClient.uploadFile(file)
 
       if (response.success && response.data) {
-        const newConnection = {
+        const newConnection: Connection = {
           id: response.data.connection_id,
           type: "file",
           fileName: response.data.details.filename,
@@ -136,10 +173,16 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
           status: "uploaded",
           recordCount: response.data.details.record_count,
           columns: response.data.details.columns || [],
+          createdAt: new Date().toISOString(),
         }
 
-        setConnections((prev) => [...prev, newConnection])
-        onDataConnected(newConnection)
+        setConnections((prev) => {
+          const updated = [...prev, newConnection]
+          addConnection(newConnection)
+          return updated
+        })
+
+        stableOnDataConnected(newConnection)
 
         toast({
           title: "File Uploaded Successfully",
@@ -147,7 +190,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
         })
       } else {
         // Handle API failure with mock data
-        const mockConnection = {
+        const mockConnection: Connection = {
           id: `mock-file-${Date.now()}`,
           type: "file",
           fileName: file.name,
@@ -155,10 +198,16 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
           status: "uploaded",
           recordCount: 5000,
           columns: ["id", "name", "email", "created_at", "value"],
+          createdAt: new Date().toISOString(),
         }
 
-        setConnections((prev) => [...prev, mockConnection])
-        onDataConnected(mockConnection)
+        setConnections((prev) => {
+          const updated = [...prev, mockConnection]
+          addConnection(mockConnection)
+          return updated
+        })
+
+        stableOnDataConnected(mockConnection)
 
         toast({
           title: "Mock File Upload",
@@ -168,7 +217,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
     } catch (error) {
       // Fallback to mock data in development
       if (process.env.NODE_ENV === "development") {
-        const mockConnection = {
+        const mockConnection: Connection = {
           id: `mock-file-${Date.now()}`,
           type: "file",
           fileName: file.name,
@@ -176,10 +225,16 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
           status: "uploaded",
           recordCount: 5000,
           columns: ["id", "name", "email", "created_at", "value"],
+          createdAt: new Date().toISOString(),
         }
 
-        setConnections((prev) => [...prev, mockConnection])
-        onDataConnected(mockConnection)
+        setConnections((prev) => {
+          const updated = [...prev, mockConnection]
+          addConnection(mockConnection)
+          return updated
+        })
+
+        stableOnDataConnected(mockConnection)
 
         toast({
           title: "Development Mode",
@@ -194,7 +249,37 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
       }
     } finally {
       setIsLoading?.(false)
+      // Clear the file input
+      event.target.value = ""
+      setUploadedFile(null)
     }
+  }
+
+  const handleRemoveConnection = (connectionId: string) => {
+    setConnections((prev) => {
+      const updated = prev.filter(conn => conn.id !== connectionId)
+      removeConnection(connectionId)
+      return updated
+    })
+
+    toast({
+      title: "Connection Removed",
+      description: "Connection has been removed from the list",
+    })
+  }
+
+  const clearAllConnections = () => {
+    setConnections([])
+    connectionsStorage = []
+    setHasNotifiedParent(false) // Reset notification flag
+    toast({
+      title: "All Connections Cleared",
+      description: "All connections have been removed",
+    })
+  }
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleString()
   }
 
   const dbTypes = [
@@ -208,11 +293,29 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div>
-        <h2 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
-          Data Connector Engine
-        </h2>
-        <p className="text-gray-600 mt-2">Connect to databases, upload files, and manage data sources</p>
+      <div className="flex justify-between items-start">
+        <div>
+          <h2 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
+            Data Connector Engine
+          </h2>
+          <p className="text-gray-600 mt-2">Connect to databases, upload files, and manage data sources</p>
+          {connections.length > 0 && (
+            <p className="text-sm text-green-600 mt-1">
+              {connections.length} active connection{connections.length > 1 ? 's' : ''} saved
+            </p>
+          )}
+        </div>
+        {connections.length > 0 && (
+          <Button
+            onClick={clearAllConnections}
+            variant="outline"
+            size="sm"
+            className="text-red-600 border-red-200 hover:bg-red-50"
+          >
+            <Trash2 className="w-4 h-4 mr-2" />
+            Clear All
+          </Button>
+        )}
       </div>
 
       <Tabs defaultValue="database" className="space-y-6">
@@ -338,7 +441,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
                   <div className="flex-1">
                     <p className="font-semibold text-green-800">{uploadedFile.name}</p>
                     <p className="text-sm text-green-600">
-                      {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB • Ready for analysis
+                      {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB • Processing...
                     </p>
                   </div>
                 </div>
@@ -355,9 +458,9 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
             <div className="p-2 bg-gradient-to-r from-violet-500 to-purple-500 rounded-lg">
               <Database className="h-5 w-5 text-white" />
             </div>
-            Active Connections
+            Active Connections ({connections.length})
           </CardTitle>
-          <CardDescription>Manage your connected data sources</CardDescription>
+          <CardDescription>Manage your connected data sources - connections persist when navigating</CardDescription>
         </CardHeader>
         <CardContent>
           {connections.length === 0 ? (
@@ -373,7 +476,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
                   key={connection.id}
                   className="flex items-center justify-between p-4 bg-gradient-to-r from-white to-violet-50 rounded-xl border border-violet-100"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-1">
                     <div
                       className={`p-2 rounded-lg ${
                         connection.type === "database"
@@ -387,22 +490,35 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
                         <FileText className="h-4 w-4 text-white" />
                       )}
                     </div>
-                    <div>
-                      <span className="font-semibold text-gray-800">
-                        {connection.type === "database"
-                          ? `${connection.dbType?.toUpperCase()} Database`
-                          : connection.fileName}
-                      </span>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-gray-800">
+                          {connection.type === "database"
+                            ? `${connection.dbType?.toUpperCase()} Database`
+                            : connection.fileName}
+                        </span>
+                      </div>
                       <div className="flex items-center gap-4 mt-1 text-sm text-gray-600">
                         <span>{connection.recordCount?.toLocaleString()} records</span>
                         {connection.tables && <span>{connection.tables.length} tables</span>}
                         {connection.columns && <span>{connection.columns.length} columns</span>}
+                        <span className="text-xs">• {formatDate(connection.createdAt)}</span>
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="h-5 w-5 text-green-500" />
-                    <span className="text-sm font-medium text-green-600">Connected</span>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle className="h-5 w-5 text-green-500" />
+                      <span className="text-sm font-medium text-green-600">Connected</span>
+                    </div>
+                    <Button
+                      onClick={() => handleRemoveConnection(connection.id)}
+                      variant="ghost"
+                      size="sm"
+                      className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
               ))}

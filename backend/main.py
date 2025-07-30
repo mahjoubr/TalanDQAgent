@@ -1,3 +1,4 @@
+from dataclasses import Field
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,6 +11,17 @@ from datetime import datetime
 import uuid
 import os
 from dotenv import load_dotenv
+import uuid
+from datetime import datetime
+from typing import Dict, Optional
+import sqlalchemy
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.exc import SQLAlchemyError
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+import psycopg2
+import pymysql
+import pyodbc
 
 # Import your VARIMA detection functions
 from varima_detector import (
@@ -41,14 +53,21 @@ app.add_middleware(
 powerbi_service = PowerBIService()
 
 # In-memory storage for demo (use database in production)
-data_connections = {}
+data_connections: Dict[str, dict] = {}
 analysis_results = {}
 powerbi_tokens = {}
 
 # Pydantic models
 class DatabaseConnection(BaseModel):
-    db_type: str
-    connection_string: str
+    db_type: str = Field(..., description="Type of database (postgresql, mysql, sqlserver, sqlite, oracle)")
+    connection_string: str = Field(..., description="Database connection string")
+    username: Optional[str] = Field(None, description="Database username")
+    password: Optional[str] = Field(None, description="Database password")
+    host: str = Field(..., description="Database host")
+    port: Optional[int] = Field(None, description="Database port")
+    database_name: str = Field(..., description="Database name")
+    additional_params: Optional[dict] = Field({}, description="Additional connection parameters")
+
     
 class PowerBIAuth(BaseModel):
     tenant_id: str
@@ -336,22 +355,58 @@ async def push_data_to_powerbi(
         raise HTTPException(status_code=500, detail=f"Failed to push data: {str(e)}")
 
 # Existing endpoints (database, file upload, analysis, etc.)
+def create_connection_string(db_type: str, connection: DatabaseConnection) -> str:
+    """Generate proper connection string based on database type"""
+    if db_type.lower() == "postgresql":
+        return f"postgresql://{connection.username}:{connection.password}@{connection.host}:{connection.port}/{connection.database_name}"
+    elif db_type.lower() == "mysql":
+        return f"mysql+pymysql://{connection.username}:{connection.password}@{connection.host}:{connection.port}/{connection.database_name}"
+    elif db_type.lower() == "sqlserver":
+        return f"mssql+pyodbc://{connection.username}:{connection.password}@{connection.host}:{connection.port}/{connection.database_name}?driver=ODBC+Driver+17+for+SQL+Server"
+    elif db_type.lower() == "sqlite":
+        return f"sqlite:///{connection.database_name}"
+    elif db_type.lower() == "oracle":
+        return f"oracle+cx_oracle://{connection.username}:{connection.password}@{connection.host}:{connection.port}/?service_name={connection.database_name}"
+    else:
+        raise ValueError(f"Unsupported database type: {db_type}")
+
 @app.post("/api/connect/database")
 async def connect_database(connection: DatabaseConnection):
-    """Connect to a database"""
+    """Connect to a real database"""
     try:
         connection_id = str(uuid.uuid4())
-        mock_data = generate_mock_data(connection.db_type)
         
+        # Create SQLAlchemy engine
+        conn_str = create_connection_string(connection.db_type, connection)
+        engine = create_engine(conn_str, **connection.additional_params)
+        
+        # Test connection
+        with engine.connect() as conn:
+            inspector = inspect(engine)
+            tables = inspector.get_table_names()
+            
+            # Get record count for each table (sample implementation)
+            record_counts = {}
+            for table in tables:
+                try:
+                    result = conn.execute(f"SELECT COUNT(*) FROM {table}")
+                    record_counts[table] = result.scalar()
+                except:
+                    record_counts[table] = "N/A"
+            
+            total_records = sum([count for count in record_counts.values() if isinstance(count, int)])
+        
+        # Store connection details
         data_connections[connection_id] = {
             "id": connection_id,
             "type": "database",
             "db_type": connection.db_type,
-            "connection_string": connection.connection_string,
+            "connection_string": conn_str,
+            "engine": engine,  # Note: In production, you might want to handle this differently
             "status": "connected",
-            "data": mock_data,
-            "tables": ["customers", "transactions", "accounts", "audit_logs"],
-            "record_count": len(mock_data),
+            "tables": tables,
+            "record_counts": record_counts,
+            "total_records": total_records,
             "connected_at": datetime.now().isoformat()
         }
         
@@ -360,12 +415,41 @@ async def connect_database(connection: DatabaseConnection):
             "connection_id": connection_id,
             "message": f"Successfully connected to {connection.db_type} database",
             "details": {
-                "tables": data_connections[connection_id]["tables"],
-                "record_count": data_connections[connection_id]["record_count"]
+                "tables": tables,
+                "record_counts": record_counts,
+                "total_records": total_records
             }
         }
-    except Exception as e:
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@app.get("/api/connections/{connection_id}")
+async def get_connection_status(connection_id: str):
+    """Check the status of a database connection"""
+    if connection_id not in data_connections:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    
+    return data_connections[connection_id]
+
+@app.post("/api/disconnect/{connection_id}")
+async def disconnect_database(connection_id: str):
+    """Disconnect from a database"""
+    if connection_id not in data_connections:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    
+    try:
+        connection = data_connections[connection_id]
+        if "engine" in connection:
+            connection["engine"].dispose()
+        
+        del data_connections[connection_id]
+        return {"success": True, "message": "Connection closed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error disconnecting: {str(e)}")
 
 @app.post("/api/connect/file")
 async def upload_file(file: UploadFile = File(...)):

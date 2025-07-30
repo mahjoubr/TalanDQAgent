@@ -80,7 +80,7 @@ class ApiClient {
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     try {
-      // Fix: Use HeadersInit type which is more flexible
+      //  Use of HeadersInit type which is more flexible
       const headers: HeadersInit = {
         ...options.headers,
       }
@@ -114,15 +114,15 @@ class ApiClient {
         }
 
         const data = await response.json()
-        console.log("✅ Backend connected successfully")
+        console.log(" Backend connected successfully")
         return { success: true, data }
       } catch (fetchError) {
         clearTimeout(timeoutId)
-        console.warn("⚠️ Backend unavailable, using mock data:", fetchError)
+        console.warn(" Backend unavailable, using mock data:", fetchError)
         return this.getMockResponse<T>(endpoint, options)
       }
     } catch (error) {
-      console.log("❌ API request failed, falling back to mock data:", error)
+      console.log("API request failed, falling back to mock data:", error)
       return this.getMockResponse<T>(endpoint, options)
     }
   }
@@ -359,8 +359,8 @@ class ApiClient {
     return this.request<ConnectionResponse>("/api/connect/database", {
       method: "POST",
       body: JSON.stringify({
-        db_type: dbType,
-        connection_string: connectionString,
+        dbtype: dbType,
+        connectionstring: connectionString,
       }),
     })
   }

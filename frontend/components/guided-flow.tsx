@@ -28,13 +28,13 @@ interface GuidedFlowProps {
   userData?: any
   onComplete?: () => void
   onViewDashboard: () => void
-
 }
 
-export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComplete }: GuidedFlowProps) {
+export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComplete, onViewDashboard }: GuidedFlowProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [completedSteps, setCompletedSteps] = useState<number[]>([])
   const [stepData, setStepData] = useState<any>({})
+  const [isLoading, setIsLoading] = useState(false)
 
   const steps = [
     {
@@ -83,9 +83,21 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
     }
   }
 
+  const handleDataConnected = (data: any) => {
+    console.log('Data connected:', data)
+    handleStepComplete(data)
+  }
+
+  const handleMetricsCalculated = (metrics: any) => {
+    console.log('Metrics calculated:', metrics)
+    handleStepComplete(metrics)
+  }
+
   const handleNext = () => {
     if (currentStep < steps.length - 1) {
       setCurrentStep(currentStep + 1)
+    } else if (onComplete) {
+      onComplete()
     }
   }
 
@@ -102,6 +114,55 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   }
 
   const CurrentComponent = currentStepData.component
+
+  // Prepare props based on the current step
+  const getComponentProps = (): any => {
+    const baseProps = {
+      onComplete: handleStepComplete,
+      data: stepData[currentStep],
+      isCompleted: isStepCompleted,
+      setIsLoading,
+    }
+
+    switch (currentStep) {
+      case 0: // DataConnector
+        return {
+          ...baseProps,
+          onDataConnected: handleDataConnected,
+        }
+      case 1: // DataQualityEngine
+        return {
+          ...baseProps,
+          onMetricsCalculated: handleMetricsCalculated,
+          qualityMetrics: stepData[currentStep]?.metrics,
+          connections: stepData[0] ? [stepData[0]] : [], // Pass connections from step 0
+          onDataConnected: handleDataConnected, // Required by DataConnector interface
+        }
+      case 2: // AnomalyDetection
+        return {
+          ...baseProps,
+          qualityMetrics: stepData[1]?.metrics,
+          connections: stepData[0] ? [stepData[0]] : [],
+          onDataConnected: handleDataConnected, // Required by DataConnector interface
+          onMetricsCalculated: handleMetricsCalculated, // Required by DataQualityEngine interface
+        }
+      case 3: // ReportGeneration
+        return {
+          ...baseProps,
+          qualityMetrics: stepData[1]?.metrics,
+          anomalyResults: stepData[2],
+          connections: stepData[0] ? [stepData[0]] : [],
+          onDataConnected: handleDataConnected, // Required by DataConnector interface
+          onMetricsCalculated: handleMetricsCalculated, // Required by DataQualityEngine interface
+        }
+      default:
+        return {
+          ...baseProps,
+          onDataConnected: handleDataConnected,
+          onMetricsCalculated: handleMetricsCalculated,
+        }
+    }
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
@@ -228,14 +289,13 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
                 </div>
               </CardHeader>
               <CardContent>
-                <CurrentComponent
-                  onComplete={handleStepComplete}
-                  data={stepData[currentStep]}
-                  isCompleted={isStepCompleted} onDataConnected={function (data: any): void {
-                    throw new Error("Function not implemented.")
-                  } } setIsLoading={() => {}} onMetricsCalculated={function (metrics: any): void {
-                    throw new Error("Function not implemented.")
-                  } } qualityMetrics={undefined}                />
+                {isLoading && (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                    <span className="ml-3 text-gray-600">Processing...</span>
+                  </div>
+                )}
+                <CurrentComponent {...getComponentProps()} />
               </CardContent>
             </Card>
 
@@ -268,10 +328,10 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
 
               <Button
                 onClick={handleNext}
-                disabled={currentStep === steps.length - 1 || !canProceed}
+                disabled={currentStep === steps.length - 1 ? false : !canProceed}
                 className="flex items-center gap-2 bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600"
               >
-                Next
+                {currentStep === steps.length - 1 ? "Complete" : "Next"}
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </div>
