@@ -6,7 +6,10 @@ export interface ApiResponse<T = any> {
   data?: T
   error?: string
 }
-
+export interface DbStore {
+  email: string
+  connectionString: string
+}
 export interface ConnectionResponse {
   connection_id: string
   message: string
@@ -45,6 +48,17 @@ export interface PowerBIAuthRequest {
   client_secret: string
   username?: string
   password?: string
+}
+
+export interface DatabaseConnectionRequest {
+  db_type: string
+  connection_string: string
+  username?: string
+  password?: string
+  host: string
+  port?: number
+  database_name: string
+  additional_params?: Record<string, any>
 }
 
 export interface PowerBIWorkspace {
@@ -119,14 +133,16 @@ class ApiClient {
       } catch (fetchError) {
         clearTimeout(timeoutId)
         console.warn(" Backend unavailable, using mock data:", fetchError)
-        return this.getMockResponse<T>(endpoint, options)
+        //return this.getMockResponse<T>(endpoint, options)
+        return { success: false, error: "Backend unavailable", message: String(fetchError) }
       }
     } catch (error) {
       console.log("API request failed, falling back to mock data:", error)
-      return this.getMockResponse<T>(endpoint, options)
+      //return this.getMockResponse<T>(endpoint, options)
+      return { success: false, error: "API request failed", message: String(error) }
     }
   }
-
+/*
   private getMockResponse<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     // Simulate network delay
     return new Promise((resolve) => {
@@ -352,16 +368,30 @@ class ApiClient {
         }
       }, 500) // Simulate 500ms delay
     })
-  }
+  }*/
 
   // Connection endpoints
-  async connectDatabase(dbType: string, connectionString: string): Promise<ApiResponse<ConnectionResponse>> {
+  async connectDatabase(data: DatabaseConnectionRequest): Promise<ApiResponse<ConnectionResponse>> {
+    const connection = {
+      db_type: data.db_type,
+      connection_string: data.connection_string,
+      username: data.username,
+      password: data.password,
+      host: data.host,
+      port: data.port,
+      database_name: data.database_name,
+      additional_params: data.additional_params || {},
+    }
+    console.log(connection)
     return this.request<ConnectionResponse>("/api/connect/database", {
       method: "POST",
-      body: JSON.stringify({
-        dbtype: dbType,
-        connectionstring: connectionString,
-      }),
+      body: JSON.stringify(connection),
+    })
+  }
+  async storeConnectionString(email: string, connectionString: string): Promise<ApiResponse<DbStore>> {
+    return this.request<DbStore>("/api/store/db-connection", {
+      method: "POST",
+      body: JSON.stringify({ email, connectionString }),
     })
   }
 
@@ -508,6 +538,26 @@ class ApiClient {
   clearSession() {
     this.sessionId = null
   }
+
+async deleteConnectionString(email: string, connectionId: string): Promise<ApiResponse<{ remaining_connections: number }>> {
+  return this.request<{ remaining_connections: number }>(`/api/delete/db-connection/${email}/${connectionId}`, {
+    method: "DELETE",
+  })
 }
+
+async getStoredConnections(email: string): Promise<ApiResponse<{
+  email: string
+  connections: Array<{
+    connection_id: string
+    created_at: string
+    connection_preview: string
+  }>
+  total_connections: number
+  last_updated: string
+}>> {
+  return this.request(`/api/get/db-connections/${email}`)
+}
+}
+
 
 export const apiClient = new ApiClient()

@@ -14,3 +14,4 @@ sqlalchemy==2.0.22
 psycopg2==2.9.5
 pymysql==1.0.3
 pyodbc==4.0.30
+redis

@@ -11,9 +11,7 @@ from datetime import datetime
 import uuid
 import os
 from dotenv import load_dotenv
-import uuid
-from datetime import datetime
-from typing import Dict, Optional
+import redis
 import sqlalchemy
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.exc import SQLAlchemyError
@@ -24,6 +22,7 @@ import pymysql
 import pyodbc
 
 # Import your VARIMA detection functions
+from redis_client import redis_client
 from varima_detector import (
     run_varima_detection,
     detect_varima_anomalies,
@@ -68,13 +67,17 @@ class DatabaseConnection(BaseModel):
     database_name: str = Field(..., description="Database name")
     additional_params: Optional[dict] = Field({}, description="Additional connection parameters")
 
-    
+
 class PowerBIAuth(BaseModel):
     tenant_id: str
     client_id: str
     client_secret: str
     username: Optional[str] = None
     password: Optional[str] = None
+
+class DbStoreRequest(BaseModel):
+    email: str
+    connectionString: str
 
 class PowerBIEmbedRequest(BaseModel):
     workspace_id: str
@@ -627,6 +630,199 @@ async def generate_report(request: ReportRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
+    
+
+    
+@app.post("/api/store/db-connection")
+async def storeConnectionString(data: DbStoreRequest):
+    try:
+        # Create a key for the user's connection strings
+        redis_key = f"user_connections:{data.email}"
+        
+        # Get existing connections for this user (if any)
+        existing_connections = redis_client.get(redis_key)
+        
+        if existing_connections:
+            # Parse existing JSON data
+            connections_data = json.loads(existing_connections)
+        else:
+            # Initialize new connections data structure
+            connections_data = {
+                "email": data.email,
+                "connections": [],
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }
+        
+        # Create new connection entry
+        new_connection = {
+            "connection_string": data.connectionString,
+            "created_at": datetime.now().isoformat(),
+            "connection_id": f"conn_{len(connections_data['connections']) + 1}_{int(datetime.now().timestamp())}"
+        }
+        
+        # Add new connection to the list
+        connections_data["connections"].append(new_connection)
+        connections_data["updated_at"] = datetime.now().isoformat()
+        
+        print(f"Storing connection string for {connections_data}")
+        # Store updated data in Redis
+        redis_client.set(
+            redis_key, 
+            json.dumps(connections_data),
+            ex=86400 * 30  # Expire after 30 days (optional)
+        )
+
+        print(f"Stored connection string for {data.email}: {data.connectionString}")
+
+        return {
+            "success": True, 
+            "message": "Connection string stored successfully",
+            "connection_id": new_connection["connection_id"],
+            "total_connections": len(connections_data["connections"])
+        }
+        
+    except redis.RedisError as e:
+        print(f"Redis error: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Failed to store connection string: {str(e)}"
+        }
+    except json.JSONDecodeError as e:
+        print(f"JSON parsing error: {str(e)}")
+        return {
+            "success": False,
+            "message": "Failed to parse existing connection data"
+        }
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        return {
+            "success": False,
+            "message": f"An unexpected error occurred: {str(e)}"
+        }
+
+
+# Additional helper functions you might want to add:
+
+@app.get("/api/get/db-connections/{email}")
+async def getConnectionStrings(email: str):
+    """Retrieve all connection strings for a user"""
+    try:
+        redis_key = f"user_connections:{email}"
+        connections_data = redis_client.get(redis_key)
+        
+        if connections_data:
+            data = json.loads(connections_data)
+            # Remove sensitive connection strings from response for security
+            sanitized_connections = []
+            for conn in data["connections"]:
+                sanitized_connections.append({
+                    "connection_id": conn["connection_id"],
+                    "created_at": conn["created_at"],
+                    "connection_preview": conn["connection_string"][:20] + "..." if len(conn["connection_string"]) > 20 else conn["connection_string"]
+                })
+            
+            return {
+                "success": True,
+                "email": data["email"],
+                "connections": sanitized_connections,
+                "total_connections": len(sanitized_connections),
+                "last_updated": data["updated_at"]
+            }
+        else:
+            return {
+                "success": True,
+                "message": "No connections found for this user",
+                "connections": [],
+                "total_connections": 0
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Failed to retrieve connections: {str(e)}"
+        }
+
+
+@app.delete("/api/delete/db-connection/{email}/{connection_id}")
+async def deleteConnectionString(email: str, connection_id: str):
+    """Delete a specific connection string"""
+    try:
+        redis_key = f"user_connections:{email}"
+        connections_data = redis_client.get(redis_key)
+        
+        if connections_data:
+            data = json.loads(connections_data)
+            
+            # Find and remove the connection
+            original_count = len(data["connections"])
+            data["connections"] = [
+                conn for conn in data["connections"] 
+                if conn["connection_id"] != connection_id
+            ]
+            
+            if len(data["connections"]) < original_count:
+                data["updated_at"] = datetime.now().isoformat()
+                
+                # Update Redis
+                redis_client.set(redis_key, json.dumps(data))
+                
+                return {
+                    "success": True,
+                    "message": "Connection deleted successfully",
+                    "remaining_connections": len(data["connections"])
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Connection not found"
+                }
+        else:
+            return {
+                "success": False,
+                "message": "No connections found for this user"
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Failed to delete connection: {str(e)}"
+        }
+
+
+# Basic key-value storage:
+@app.post("/api/store/db-connection-simple")
+async def storeConnectionStringSimple(email: str, connectionString: str):
+    """Simple version - just stores the latest connection string"""
+    try:
+        redis_key = f"user_connection:{email}"
+        
+        # Store connection string with metadata
+        connection_data = {
+            "connection_string": connectionString,
+            "stored_at": datetime.now().isoformat(),
+            "email": email
+        }
+        
+        redis_client.set(
+            redis_key, 
+            json.dumps(connection_data),
+            ex=86400 * 7  # Expire after 7 days
+        )
+        
+        print(f"Stored connection string for {email}: {connectionString}")
+        
+        return {
+            "success": True, 
+            "message": "Connection string stored successfully"
+        }
+        
+    except Exception as e:
+        print(f"Error storing connection: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Failed to store connection string: {str(e)}"
+        }
 
 # Helper functions
 def generate_mock_data(db_type: str) -> pd.DataFrame:
@@ -676,6 +872,8 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, float]:
         "consistency": round(consistency, 1),
         "volumetry": round(volumetry, 1)
     }
+
+
 
 if __name__ == "__main__":
     import uvicorn

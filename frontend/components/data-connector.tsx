@@ -10,23 +10,47 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { Database, Upload, FileText, CheckCircle, Zap, Server, Trash2 } from "lucide-react"
+import { Database, Upload, FileText, CheckCircle, Zap, Server, Trash2, Cloud } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { apiClient } from "@/lib/api"
+import { apiClient, type DatabaseConnectionRequest } from "@/lib/api"
 
-interface Connection {
+// Base connection interface
+interface BaseConnection {
   id: string
-  type: "database" | "file"
-  dbType?: string
-  connectionString?: string
-  fileName?: string
-  fileSize?: number
   status: string
-  tables?: string[]
-  recordCount?: number
-  columns?: string[]
   createdAt: string
 }
+
+// Database connection interface matching backend Pydantic model
+interface DatabaseConnection extends BaseConnection {
+  db_type: string
+  connection_string: string
+  username?: string
+  password?: string
+  host: string
+  port?: number
+  database_name: string
+  additional_params?: Record<string, any>
+}
+
+// File connection interface
+interface FileConnection extends BaseConnection {
+  type: "file"
+  fileName: string
+  fileSize: number
+  recordCount?: number
+  columns?: string[]
+}
+
+// Stored connection interface (from Redis/backend)
+interface StoredConnection {
+  connection_id: string
+  created_at: string
+  connection_preview: string
+}
+
+// Union type for all connection types
+type Connection = DatabaseConnection | FileConnection
 
 interface DataConnectorProps {
   onDataConnected: (data: any) => void
@@ -61,11 +85,25 @@ const removeConnection = (connectionId: string) => {
 export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCompleted }: DataConnectorProps) {
   const [connectionString, setConnectionString] = useState("")
   const [dbType, setDbType] = useState("")
+  const [username, setUsername] = useState("aa")
+  const [password, setPassword] = useState("aa")
+  const [host, setHost] = useState("aa")
+  const [port, setPort] = useState("aa")
+  const [databaseName, setDatabaseName] = useState("aa")
   const [isConnecting, setIsConnecting] = useState(false)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [connections, setConnections] = useState<Connection[]>([])
+  const [storedConnections, setStoredConnections] = useState<StoredConnection[]>([])
   const [hasNotifiedParent, setHasNotifiedParent] = useState(false)
+  const [isLoadingStored, setIsLoadingStored] = useState(false)
   const { toast } = useToast()
+
+  // Get user email from localStorage
+  const getUserEmail = () => {
+    const savedDataString = localStorage.getItem("signInData")
+    const savedData = savedDataString ? JSON.parse(savedDataString) : null
+    return savedData?.email || null
+  }
 
   // Memoize the onDataConnected callback to prevent unnecessary re-renders
   const stableOnDataConnected = useCallback((data: any) => {
@@ -74,10 +112,31 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
     }
   }, [onDataConnected])
 
+  // Load stored connections from backend
+  const loadStoredConnections = async () => {
+    const email = getUserEmail()
+    if (!email) return
+
+    setIsLoadingStored(true)
+    try {
+      const response = await apiClient.getStoredConnections(email)
+      if (response.success && response.data) {
+        setStoredConnections(response.data.connections || [])
+      }
+    } catch (error) {
+      console.error("Failed to load stored connections:", error)
+    } finally {
+      setIsLoadingStored(false)
+    }
+  }
+
   // Load saved connections on component mount
   useEffect(() => {
     const savedConnections = loadConnections()
     setConnections(savedConnections)
+    
+    // Load stored connections from backend
+    loadStoredConnections()
     
     // Only notify parent once and only if there are connections and we haven't notified yet
     if (savedConnections.length > 0 && !hasNotifiedParent) {
@@ -98,10 +157,10 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
   }, [connections])
 
   const handleDatabaseConnect = async () => {
-    if (!dbType || !connectionString) {
+    if (!dbType || !host || !databaseName) {
       toast({
         title: "Missing Information",
-        description: "Please select database type and enter connection string",
+        description: "Please fill in database type, host, and database name",
         variant: "destructive",
       })
       return
@@ -109,20 +168,63 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
 
     setIsConnecting(true)
     setIsLoading?.(true)
-
+    console.log("Connecting to database:", { dbType, host, databaseName, username })
+    
     try {
-      const response = await apiClient.connectDatabase(dbType, connectionString)
+      // Auto-generate connection string if not provided
+      let finalConnectionString = connectionString
+      if (!finalConnectionString && host && databaseName) {
+        const portPart = port ? `:${port}` : ''
+        const authPart = username && password ? `${username}:${password}@` : ''
+        
+        switch (dbType) {
+          case 'postgresql':
+            finalConnectionString = `postgresql://${authPart}${host}${portPart}/${databaseName}`
+            break
+          case 'mysql':
+            finalConnectionString = `mysql+pymysql://${authPart}${host}${portPart}/${databaseName}`
+            break
+          case 'sqlserver':
+            finalConnectionString = `mssql+pyodbc://${authPart}${host}${portPart}/${databaseName}?driver=ODBC+Driver+17+for+SQL+Server`
+            break
+          case 'oracle':
+            finalConnectionString = `oracle+cx_oracle://${authPart}${host}${portPart}/?service_name=${databaseName}`
+            break
+          case 'sqlite':
+            finalConnectionString = `sqlite:///${databaseName}`
+            break
+          default:
+            finalConnectionString = `${dbType}://${authPart}${host}${portPart}/${databaseName}`
+        }
+      }
+
+      // Create the request object matching backend Pydantic model
+      const connectionRequest = {
+        db_type: dbType,
+        connection_string: finalConnectionString,
+        username: username || undefined,
+        password: password || undefined,
+        host,
+        port: port ? parseInt(port) : undefined,
+        database_name: databaseName,
+        additional_params: {},
+      }
+      
+      const response = await apiClient.connectDatabase(connectionRequest)
 
       if (response.success && response.data) {
-        const newConnection: Connection = {
-          id: response.data.connection_id,
-          type: "database",
-          dbType,
-          connectionString,
+        const newConnection: DatabaseConnection = {
+          id: response.data.connection_id || `db-${Date.now()}`,
+          db_type: dbType,
+          connection_string: finalConnectionString,
+          username: username || undefined,
+          password: password || undefined,
+          host,
+          port: port ? parseInt(port) : undefined,
+          database_name: databaseName,
+          additional_params: {},
           status: "connected",
-          tables: response.data.details.tables || [],
-          recordCount: response.data.details.record_count,
-          createdAt: new Date().toISOString(),
+          createdAt: new Date().toISOString()
         }
 
         setConnections((prev) => {
@@ -132,6 +234,14 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
         })
 
         stableOnDataConnected(newConnection)
+        
+        // Store connection string in backend
+        const email = getUserEmail()
+        if (email) {
+          await apiClient.storeConnectionString(email, finalConnectionString)
+          // Reload stored connections to show the new one
+          loadStoredConnections()
+        }
 
         toast({
           title: "Database Connected Successfully",
@@ -141,6 +251,11 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
         // Clear form after successful connection
         setConnectionString("")
         setDbType("")
+        setUsername("")
+        setPassword("")
+        setHost("")
+        setPort("")
+        setDatabaseName("")
       }
     } catch (error) {
       toast({
@@ -165,10 +280,10 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
       const response = await apiClient.uploadFile(file)
 
       if (response.success && response.data) {
-        const newConnection: Connection = {
+        const newConnection: FileConnection = {
           id: response.data.connection_id,
           type: "file",
-          fileName: response.data.details.filename,
+          fileName: response.data.details.filename || file.name,
           fileSize: (response.data.details.size_mb || 0) * 1024 * 1024,
           status: "uploaded",
           recordCount: response.data.details.record_count,
@@ -190,7 +305,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
         })
       } else {
         // Handle API failure with mock data
-        const mockConnection: Connection = {
+        const mockConnection: FileConnection = {
           id: `mock-file-${Date.now()}`,
           type: "file",
           fileName: file.name,
@@ -217,7 +332,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
     } catch (error) {
       // Fallback to mock data in development
       if (process.env.NODE_ENV === "development") {
-        const mockConnection: Connection = {
+        const mockConnection: FileConnection = {
           id: `mock-file-${Date.now()}`,
           type: "file",
           fileName: file.name,
@@ -266,6 +381,43 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
       title: "Connection Removed",
       description: "Connection has been removed from the list",
     })
+  }
+
+  const handleDeleteStoredConnection = async (connectionId: string) => {
+    const email = getUserEmail()
+    if (!email) {
+      toast({
+        title: "Error",
+        description: "No user email found",
+        variant: "destructive",
+      })
+      return
+    }
+
+    try {
+      const response = await apiClient.deleteConnectionString(email, connectionId)
+      if (response.success) {
+        // Remove from local state
+        setStoredConnections(prev => prev.filter(conn => conn.connection_id !== connectionId))
+        
+        toast({
+          title: "Connection Deleted",
+          description:  "Connection deleted successfully",
+        })
+      } else {
+        toast({
+          title: "Delete Failed",
+          description: response.message || "Failed to delete connection",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Delete Failed",
+        description: error instanceof Error ? error.message : "Unknown error occurred",
+        variant: "destructive",
+      })
+    }
   }
 
   const clearAllConnections = () => {
@@ -364,24 +516,92 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
                 </Select>
               </div>
 
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="host" className="text-sm font-semibold text-gray-700">
+                    Host <span className="text-red-500">*</span>
+                  </Label>
+                  <Input
+                    id="host"
+                    placeholder="localhost or IP address"
+                    value={host}
+                    onChange={(e) => setHost(e.target.value)}
+                    className="border-blue-200 focus:border-blue-400"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="port" className="text-sm font-semibold text-gray-700">
+                    Port
+                  </Label>
+                  <Input
+                    id="port"
+                    placeholder="5432"
+                    value={port}
+                    onChange={(e) => setPort(e.target.value)}
+                    className="border-blue-200 focus:border-blue-400"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="database-name" className="text-sm font-semibold text-gray-700">
+                  Database Name <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="database-name"
+                  placeholder="Enter database name"
+                  value={databaseName}
+                  onChange={(e) => setDatabaseName(e.target.value)}
+                  className="border-blue-200 focus:border-blue-400"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="username" className="text-sm font-semibold text-gray-700">
+                    Username
+                  </Label>
+                  <Input
+                    id="username"
+                    placeholder="Database username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="border-blue-200 focus:border-blue-400"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password" className="text-sm font-semibold text-gray-700">
+                    Password
+                  </Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    placeholder="Database password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="border-blue-200 focus:border-blue-400"
+                  />
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="connection-string" className="text-sm font-semibold text-gray-700">
-                  Connection String
+                  Connection String (Optional)
                 </Label>
                 <Textarea
                   id="connection-string"
                   placeholder="postgresql://username:password@host:port/database"
                   value={connectionString}
                   onChange={(e) => setConnectionString(e.target.value)}
-                  rows={4}
+                  rows={3}
                   className="border-blue-200 focus:border-blue-400 font-mono text-sm"
                 />
-                <p className="text-xs text-gray-500">Example: postgresql://user:pass@localhost:5432/datawarehouse</p>
+                <p className="text-xs text-gray-500">Override the individual fields above with a complete connection string</p>
               </div>
 
               <Button
                 onClick={handleDatabaseConnect}
-                disabled={!dbType || !connectionString || isConnecting}
+                disabled={!dbType || !host || !databaseName || isConnecting}
                 className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white font-semibold py-3 shadow-lg"
               >
                 {isConnecting ? (
@@ -451,7 +671,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
         </TabsContent>
       </Tabs>
 
-      {/* Connection Status */}
+      {/* Active Connections */}
       <Card className="border-0 shadow-lg">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-xl">
@@ -477,31 +697,13 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
                   className="flex items-center justify-between p-4 bg-gradient-to-r from-white to-violet-50 rounded-xl border border-violet-100"
                 >
                   <div className="flex items-center gap-3 flex-1">
-                    <div
-                      className={`p-2 rounded-lg ${
-                        connection.type === "database"
-                          ? "bg-gradient-to-r from-blue-500 to-cyan-500"
-                          : "bg-gradient-to-r from-green-500 to-emerald-500"
-                      }`}
-                    >
-                      {connection.type === "database" ? (
-                        <Database className="h-4 w-4 text-white" />
-                      ) : (
-                        <FileText className="h-4 w-4 text-white" />
-                      )}
-                    </div>
                     <div className="flex-1">
                       <div className="flex items-center justify-between">
                         <span className="font-semibold text-gray-800">
-                          {connection.type === "database"
-                            ? `${connection.dbType?.toUpperCase()} Database`
-                            : connection.fileName}
+                          {connection.id}
                         </span>
                       </div>
                       <div className="flex items-center gap-4 mt-1 text-sm text-gray-600">
-                        <span>{connection.recordCount?.toLocaleString()} records</span>
-                        {connection.tables && <span>{connection.tables.length} tables</span>}
-                        {connection.columns && <span>{connection.columns.length} columns</span>}
                         <span className="text-xs">• {formatDate(connection.createdAt)}</span>
                       </div>
                     </div>
@@ -513,6 +715,75 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
                     </div>
                     <Button
                       onClick={() => handleRemoveConnection(connection.id)}
+                      variant="ghost"
+                      size="sm"
+                      className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Stored Connections from Backend */}
+      <Card className="border-0 shadow-lg">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-xl">
+            <div className="p-2 bg-gradient-to-r from-orange-500 to-red-500 rounded-lg">
+              <Cloud className="h-5 w-5 text-white" />
+            </div>
+            Stored Connections ({storedConnections.length})
+          </CardTitle>
+          <CardDescription>Previously saved database connections from your account</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isLoadingStored ? (
+            <div className="text-center py-8">
+              <div className="w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+              <p className="text-gray-500">Loading stored connections...</p>
+            </div>
+          ) : storedConnections.length === 0 ? (
+            <div className="text-center py-8">
+              <Cloud className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500">No stored connections found</p>
+              <p className="text-sm text-gray-400">Connect to a database to save connection strings</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {storedConnections.map((connection) => (
+                <div
+                  key={connection.connection_id}
+                  className="flex items-center justify-between p-4 bg-gradient-to-r from-white to-orange-50 rounded-xl border border-orange-100"
+                >
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="p-2 bg-gradient-to-r from-orange-500 to-red-500 rounded-lg">
+                      <Database className="h-4 w-4 text-white" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-gray-800">
+                          {connection.connection_id}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4 mt-1 text-sm text-gray-600">
+                        <span className="font-mono text-xs bg-gray-100 px-2 py-1 rounded">
+                          {connection.connection_preview}
+                        </span>
+                        <span className="text-xs">• {formatDate(connection.created_at)}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <Cloud className="h-5 w-5 text-orange-500" />
+                      <span className="text-sm font-medium text-orange-600">Stored</span>
+                    </div>
+                    <Button
+                      onClick={() => handleDeleteStoredConnection(connection.connection_id)}
                       variant="ghost"
                       size="sm"
                       className="text-red-500 hover:text-red-700 hover:bg-red-50"

@@ -41,6 +41,9 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     confirmPassword: "",
     agreeToTerms: false,
   })
+  const storeSignInData = () => {
+    localStorage.setItem("signInData", JSON.stringify({email: signInData.email, password: signInData.password}))
+  }
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -266,6 +269,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                   type="submit"
                   disabled={isLoading}
                   className="w-full bg-gradient-to-r from-violet-500 to-blue-500 hover:from-violet-600 hover:to-blue-600 text-white font-semibold py-3 shadow-lg"
+                  onClick={storeSignInData}
                 >
                   {isLoading ? (
                     <div className="flex items-center gap-2">
