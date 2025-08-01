@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   BarChart3,
 } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
 
 interface GuidedFlowProps {
   onBack?: () => void
@@ -35,6 +36,17 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   const [completedSteps, setCompletedSteps] = useState<number[]>([])
   const [stepData, setStepData] = useState<any>({})
   const [isLoading, setIsLoading] = useState(false)
+  const { toast } = useToast()
+
+  // Show notification when reaching quality analysis step with connected data
+  useEffect(() => {
+    if (currentStep === 1 && stepData[0]?.id) {
+      toast({
+        title: "Quality Analysis Starting",
+        description: "Automatically analyzing your connected database for quality metrics...",
+      })
+    }
+  }, [currentStep, stepData[0]?.id])
 
   const steps = [
     {
@@ -84,13 +96,25 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   }
 
   const handleDataConnected = (data: any) => {
-    console.log('Data connected:', data)
+    console.log('Data connected in guided flow:', data)
     handleStepComplete(data)
   }
 
   const handleMetricsCalculated = (metrics: any) => {
-    console.log('Metrics calculated:', metrics)
+    console.log('Metrics calculated in guided flow:', metrics)
     handleStepComplete(metrics)
+    
+    // Show completion message and auto-advance to next step after a delay
+    if (currentStep === 1) {
+      toast({
+        title: "Quality Analysis Complete!",
+        description: "Your data quality metrics have been calculated. Moving to anomaly detection...",
+      })
+      
+      setTimeout(() => {
+        setCurrentStep(2)
+      }, 3000) // 3 second delay to show results
+    }
   }
 
   const handleNext = () => {
@@ -119,7 +143,6 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   const getComponentProps = (): any => {
     const baseProps = {
       onComplete: handleStepComplete,
-      data: stepData[currentStep],
       isCompleted: isStepCompleted,
       setIsLoading,
     }
@@ -128,11 +151,13 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
       case 0: // DataConnector
         return {
           ...baseProps,
+          data: stepData[currentStep],
           onDataConnected: handleDataConnected,
         }
       case 1: // DataQualityEngine
         return {
           ...baseProps,
+          data: stepData[0], // Pass the connected data from step 0
           onMetricsCalculated: handleMetricsCalculated,
           qualityMetrics: stepData[currentStep]?.metrics,
           connections: stepData[0] ? [stepData[0]] : [], // Pass connections from step 0
@@ -141,6 +166,7 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
       case 2: // AnomalyDetection
         return {
           ...baseProps,
+          data: stepData[0], // Pass the connected data from step 0
           qualityMetrics: stepData[1]?.metrics,
           connections: stepData[0] ? [stepData[0]] : [],
           onDataConnected: handleDataConnected, // Required by DataConnector interface
@@ -149,6 +175,7 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
       case 3: // ReportGeneration
         return {
           ...baseProps,
+          data: stepData[0], // Pass the connected data from step 0
           qualityMetrics: stepData[1]?.metrics,
           anomalyResults: stepData[2],
           connections: stepData[0] ? [stepData[0]] : [],

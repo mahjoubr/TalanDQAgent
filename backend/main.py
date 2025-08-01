@@ -494,39 +494,115 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
+@app.get("/api/connections/{connection_id}/sample")
+async def get_connection_sample(connection_id: str, limit: int = 100):
+    """Get sample data from a connection for preview"""
+    try:
+        if connection_id not in data_connections:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        connection_data = data_connections[connection_id]
+        
+        if connection_data["type"] == "database" and "engine" in connection_data:
+            # Get sample from database
+            engine = connection_data["engine"]
+            tables = connection_data.get("tables", [])
+            
+            if not tables:
+                raise HTTPException(status_code=400, detail="No tables found in database")
+            
+            table_name = tables[0]  # Use first table for sample
+            query = f"SELECT * FROM {table_name} LIMIT {limit}"
+            df = pd.read_sql(query, engine)
+            
+        elif connection_data["type"] == "file" and "data" in connection_data:
+            # For file uploads, use existing data
+            df = connection_data["data"]
+            df = df.head(limit)  # Limit rows
+        else:
+            raise HTTPException(status_code=400, detail="No data available for this connection type")
+        
+        # Convert to JSON-serializable format
+        sample_data = {
+            "columns": df.columns.tolist(),
+            "data": df.head(limit).to_dict('records'),
+            "total_rows": len(df),
+            "data_types": {col: str(df[col].dtype) for col in df.columns}
+        }
+        
+        return {
+            "success": True,
+            "connection_id": connection_id,
+            "sample": sample_data,
+            "message": f"Retrieved {len(sample_data['data'])} sample records"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get sample data: {str(e)}")
+
 @app.get("/api/connections")
 async def get_connections():
     """Get all active connections"""
     connections_list = []
     for conn_id, conn_data in data_connections.items():
-        conn_summary = {k: v for k, v in conn_data.items() if k != 'data'}
+        conn_summary = {k: v for k, v in conn_data.items() if k not in ['data', 'engine', 'sample_data']}
         connections_list.append(conn_summary)
     
     return {"connections": connections_list}
 
 @app.post("/api/analysis/quality-metrics")
 async def run_quality_analysis(connection_id: str):
-    """Run data quality analysis"""
+    """Run comprehensive data quality analysis"""
     try:
         if connection_id not in data_connections:
             raise HTTPException(status_code=404, detail="Connection not found")
         
-        df = data_connections[connection_id]["data"]
-        metrics = calculate_quality_metrics(df)
+        connection_data = data_connections[connection_id]
         
+        # For database connections, fetch actual data
+        if connection_data["type"] == "database" and "engine" in connection_data:
+            engine = connection_data["engine"]
+            tables = connection_data.get("tables", [])
+            
+            if not tables:
+                raise HTTPException(status_code=400, detail="No tables found in database")
+            
+            # Use the first table or a table with most records
+            table_name = tables[0]
+            query = f"SELECT * FROM {table_name} LIMIT 10000"  # Sample for performance
+            df = pd.read_sql(query, engine)
+            
+            # Update connection data with sample
+            data_connections[connection_id]["sample_data"] = df
+                    
+        elif connection_data["type"] == "file" and "data" in connection_data:
+            # For file uploads, use existing data
+            df = connection_data["data"]
+        else:
+            raise HTTPException(status_code=400, detail="No data available for analysis")
+        
+        # Calculate comprehensive quality metrics
+        quality_results = calculate_quality_metrics(df)
+        
+        # Store results for later retrieval
         analysis_results[f"{connection_id}_quality"] = {
             "connection_id": connection_id,
             "analysis_type": "quality_metrics",
-            "metrics": metrics,
+            "metrics": quality_results["metrics"],
+            "detailed_analysis": quality_results["detailed_analysis"],
+            "sample_size": len(df),
             "analyzed_at": datetime.now().isoformat()
         }
         
         return {
             "success": True,
             "connection_id": connection_id,
-            "metrics": metrics,
-            "message": "Quality analysis completed successfully"
+            "metrics": quality_results["metrics"],
+            "detailed_analysis": quality_results["detailed_analysis"],
+            "sample_size": len(df),
+            "message": "Comprehensive quality analysis completed successfully"
         }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Quality analysis failed: {str(e)}")
 
@@ -537,7 +613,15 @@ async def run_anomaly_detection(request: AnomalyDetectionRequest):
         if request.connection_id not in data_connections:
             raise HTTPException(status_code=404, detail="Connection not found")
         
-        df = data_connections[request.connection_id]["data"]
+        connection_data = data_connections[request.connection_id]
+        
+        # Get actual data from connection
+        if connection_data["type"] == "database" and "sample_data" in connection_data:
+            df = connection_data["sample_data"]
+        elif connection_data["type"] == "file" and "data" in connection_data:
+            df = connection_data["data"]
+        else:
+            raise HTTPException(status_code=400, detail="No data available for anomaly detection. Run quality analysis first.")
         
         if request.model_type == "VARIMA":
             result_df = run_varima_detection(df)
@@ -825,52 +909,166 @@ async def storeConnectionStringSimple(email: str, connectionString: str):
         }
 
 # Helper functions
-def generate_mock_data(db_type: str) -> pd.DataFrame:
-    """Generate mock data for database connections"""
-    np.random.seed(42)
-    n_rows = 1000
-    
-    data = {
-        'id': range(1, n_rows + 1),
-        'timestamp': pd.date_range('2023-01-01', periods=n_rows, freq='H'),
-        'value1': np.random.normal(100, 15, n_rows),
-        'value2': np.random.normal(50, 10, n_rows),
-        'value3': np.random.exponential(2, n_rows),
-        'category': np.random.choice(['A', 'B', 'C'], n_rows),
-        'status': np.random.choice(['active', 'inactive'], n_rows)
-    }
-    
-    anomaly_indices = np.random.choice(n_rows, size=50, replace=False)
-    for idx in anomaly_indices:
-        data['value1'][idx] *= 3
-        data['value2'][idx] *= 0.1
-    
-    return pd.DataFrame(data)
 
-def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, float]:
-    """Calculate data quality metrics"""
+def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
+    """Calculate comprehensive data quality metrics with detailed analysis"""
     total_cells = df.size
+    total_rows = len(df)
     
-    missing_cells = df.isnull().sum().sum()
-    completeness = ((total_cells - missing_cells) / total_cells) * 100
+    # COMPLETENESS: Calculate missing values per column
+    missing_by_column = df.isnull().sum()
+    total_missing = missing_by_column.sum()
+    completeness_score = ((total_cells - total_missing) / total_cells) * 100
     
-    uniqueness_scores = []
+    # Find columns with most missing data
+    missing_columns = missing_by_column[missing_by_column > 0].sort_values(ascending=False)
+    completeness_issues = []
+    for col, missing_count in missing_columns.head(5).items():
+        missing_pct = (missing_count / total_rows) * 100
+        completeness_issues.append(f"Missing values in '{col}' field ({missing_pct:.1f}%)")
+    
+    # UNIQUENESS: Calculate duplicate and unique ratios
+    duplicate_rows = df.duplicated().sum()
+    uniqueness_by_column = {}
+    uniqueness_issues = []
+    
     for col in df.columns:
-        if df[col].dtype in ['object', 'string']:
-            unique_ratio = df[col].nunique() / len(df)
-            uniqueness_scores.append(unique_ratio * 100)
-    uniqueness = np.mean(uniqueness_scores) if uniqueness_scores else 95.0
+        duplicates_in_col = df[col].duplicated().sum()
+        unique_ratio = ((total_rows - duplicates_in_col) / total_rows) * 100
+        uniqueness_by_column[col] = unique_ratio
+        
+        if duplicates_in_col > 0:
+            dup_pct = (duplicates_in_col / total_rows) * 100
+            uniqueness_issues.append(f"Duplicate values in '{col}' ({dup_pct:.1f}%)")
     
-    cardinality = np.random.uniform(75, 85)
-    consistency = np.random.uniform(85, 95)
-    volumetry = np.random.uniform(90, 98)
+    overall_uniqueness = ((total_rows - duplicate_rows) / total_rows) * 100
+    
+    # CARDINALITY: Analyze value distribution
+    cardinality_issues = []
+    cardinality_scores = []
+    
+    for col in df.columns:
+        unique_count = df[col].nunique()
+        cardinality_ratio = unique_count / total_rows
+        
+        if cardinality_ratio < 0.01:  # Very low cardinality
+            cardinality_issues.append(f"Low cardinality in '{col}' field ({unique_count} unique values)")
+            cardinality_scores.append(60)
+        elif cardinality_ratio > 0.95:  # Very high cardinality
+            cardinality_issues.append(f"High cardinality in '{col}' field ({unique_count} unique values)")
+            cardinality_scores.append(70)
+        else:
+            cardinality_scores.append(85)
+    
+    cardinality_score = np.mean(cardinality_scores) if cardinality_scores else 80
+    
+    # CONSISTENCY: Check data format consistency
+    consistency_issues = []
+    consistency_scores = []
+    
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            # Check for mixed case issues
+            str_values = df[col].dropna().astype(str)
+            if len(str_values) > 0:
+                mixed_case = sum(1 for val in str_values if val != val.lower() and val != val.upper())
+                if mixed_case > len(str_values) * 0.1:
+                    consistency_issues.append(f"Mixed case values in '{col}' field")
+                    consistency_scores.append(70)
+                else:
+                    consistency_scores.append(90)
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            # Check date format consistency
+            consistency_scores.append(85)
+        else:
+            consistency_scores.append(90)
+    
+    consistency_score = np.mean(consistency_scores) if consistency_scores else 85
+    
+    # VOLUMETRY: Analyze data volume patterns
+    volumetry_issues = []
+    volumetry_score = 95  # Base score
+    
+    # Check for empty datasets
+    if total_rows == 0:
+        volumetry_issues.append("No data records found")
+        volumetry_score = 0
+    elif total_rows < 100:
+        volumetry_issues.append(f"Low data volume ({total_rows} records)")
+        volumetry_score = 70
+    
+    # Check for unusual column counts
+    if len(df.columns) < 2:
+        volumetry_issues.append("Very few columns for analysis")
+        volumetry_score -= 10
+    elif len(df.columns) > 100:
+        volumetry_issues.append(f"Large number of columns ({len(df.columns)})")
+        volumetry_score -= 5
     
     return {
-        "completeness": round(completeness, 1),
-        "uniqueness": round(uniqueness, 1),
-        "cardinality": round(cardinality, 1),
-        "consistency": round(consistency, 1),
-        "volumetry": round(volumetry, 1)
+        "metrics": {
+            "completeness": round(completeness_score, 1),
+            "uniqueness": round(overall_uniqueness, 1),
+            "cardinality": round(cardinality_score, 1),
+            "consistency": round(consistency_score, 1),
+            "volumetry": round(volumetry_score, 1)
+        },
+        "detailed_analysis": {
+            "completeness": {
+                "score": round(completeness_score, 1),
+                "total_missing": int(total_missing),
+                "missing_by_column": missing_by_column.to_dict(),
+                "issues": completeness_issues[:3],
+                "recommendations": [
+                    "Implement data validation at source",
+                    "Add required field constraints",
+                    "Monitor data completeness over time"
+                ]
+            },
+            "uniqueness": {
+                "score": round(overall_uniqueness, 1),
+                "duplicate_rows": int(duplicate_rows),
+                "uniqueness_by_column": uniqueness_by_column,
+                "issues": uniqueness_issues[:3],
+                "recommendations": [
+                    "Add unique constraints to key fields",
+                    "Implement deduplication process",
+                    "Monitor for duplicate entries"
+                ]
+            },
+            "cardinality": {
+                "score": round(cardinality_score, 1),
+                "column_cardinalities": {col: df[col].nunique() for col in df.columns},
+                "issues": cardinality_issues[:3],
+                "recommendations": [
+                    "Standardize categorical values",
+                    "Review high-cardinality fields",
+                    "Consider data normalization"
+                ]
+            },
+            "consistency": {
+                "score": round(consistency_score, 1),
+                "data_types": {col: str(df[col].dtype) for col in df.columns},
+                "issues": consistency_issues[:3],
+                "recommendations": [
+                    "Standardize data formats",
+                    "Implement format validation",
+                    "Create data quality rules"
+                ]
+            },
+            "volumetry": {
+                "score": round(volumetry_score, 1),
+                "total_rows": total_rows,
+                "total_columns": len(df.columns),
+                "data_size_mb": round(df.memory_usage(deep=True).sum() / (1024 * 1024), 2),
+                "issues": volumetry_issues,
+                "recommendations": [
+                    "Monitor data volume trends",
+                    "Set up data volume alerts",
+                    "Plan for data growth"
+                ]
+            }
+        }
     }
 
 

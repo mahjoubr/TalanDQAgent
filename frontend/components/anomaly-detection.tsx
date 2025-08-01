@@ -112,93 +112,21 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
           description: `Detected ${response.data.anomalies_detected} anomalies in ${response.data.total_records} records`,
         })
       } else {
-        // Handle API failure with mock data
-        const mockResults = {
-          anomalies_detected: 15,
-          total_records: 10000,
-          anomaly_details: [
-            {
-              index: 1234,
-              anomaly_score: 2.8,
-              components_affected: ["value1", "value2"],
-            },
-            {
-              index: 5678,
-              anomaly_score: 3.2,
-              components_affected: ["value2", "value3"],
-            },
-          ],
-        }
-
-        setVarimaResults(mockResults)
-
-        const mockAnomalies = mockResults.anomaly_details.map((detail: any, index: number) => ({
-          id: Date.now() + index,
-          model: "VARIMA",
-          field: "multivariate_pattern",
-          value: `Pattern ${detail.index}`,
-          score: detail.anomaly_score,
-          severity: detail.anomaly_score > 3 ? "high" : detail.anomaly_score > 2 ? "medium" : "low",
-          description: `Multivariate anomaly detected in components: ${detail.components_affected.join(", ")}`,
-          confidence: Math.min(95, Math.round(detail.anomaly_score * 30)),
-        }))
-
-        setAnomalies((prev) => [...prev.filter((a) => a.model !== "VARIMA"), ...mockAnomalies])
-
+        // Handle API failure
         toast({
-          title: "Mock VARIMA Detection",
-          description: "Using mock anomaly detection - backend service unavailable",
-        })
-      }
-    } catch (error) {
-      // Fallback to mock data in development
-      if (process.env.NODE_ENV === "development") {
-        const mockResults = {
-          anomalies_detected: 15,
-          total_records: 10000,
-          anomaly_details: [
-            {
-              index: 1234,
-              anomaly_score: 2.8,
-              components_affected: ["value1", "value2"],
-            },
-            {
-              index: 5678,
-              anomaly_score: 3.2,
-              components_affected: ["value2", "value3"],
-            },
-          ],
-        }
-
-        setVarimaResults(mockResults)
-
-        const mockAnomalies = mockResults.anomaly_details.map((detail: any, index: number) => ({
-          id: Date.now() + index,
-          model: "VARIMA",
-          field: "multivariate_pattern",
-          value: `Pattern ${detail.index}`,
-          score: detail.anomaly_score,
-          severity: detail.anomaly_score > 3 ? "high" : detail.anomaly_score > 2 ? "medium" : "low",
-          description: `Multivariate anomaly detected in components: ${detail.components_affected.join(", ")}`,
-          confidence: Math.min(95, Math.round(detail.anomaly_score * 30)),
-        }))
-
-        setAnomalies((prev) => [...prev.filter((a) => a.model !== "VARIMA"), ...mockAnomalies])
-
-        toast({
-          title: "Development Mode",
-          description: "Using mock VARIMA detection for development",
-        })
-      } else {
-        toast({
-          title: "Detection Failed",
-          description: error instanceof Error ? error.message : "Unknown error occurred",
+          title: "VARIMA Detection Failed",
+          description: response.error || "Failed to run VARIMA anomaly detection",
           variant: "destructive",
         })
       }
+    } catch (error) {
+      toast({
+        title: "Detection Failed",
+        description: `Failed to run VARIMA detection: ${String(error)}`,
+        variant: "destructive",
+      })
     } finally {
-      setIsRunning(false)
-      setIsLoading(false)
+      setIsLoading?.(false)
     }
   }
 

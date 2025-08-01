@@ -304,64 +304,19 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
           description: response.data.message || "File processed successfully",
         })
       } else {
-        // Handle API failure with mock data
-        const mockConnection: FileConnection = {
-          id: `mock-file-${Date.now()}`,
-          type: "file",
-          fileName: file.name,
-          fileSize: file.size,
-          status: "uploaded",
-          recordCount: 5000,
-          columns: ["id", "name", "email", "created_at", "value"],
-          createdAt: new Date().toISOString(),
-        }
-
-        setConnections((prev) => {
-          const updated = [...prev, mockConnection]
-          addConnection(mockConnection)
-          return updated
-        })
-
-        stableOnDataConnected(mockConnection)
-
-        toast({
-          title: "Mock File Upload",
-          description: "Using mock data - backend service unavailable",
-        })
-      }
-    } catch (error) {
-      // Fallback to mock data in development
-      if (process.env.NODE_ENV === "development") {
-        const mockConnection: FileConnection = {
-          id: `mock-file-${Date.now()}`,
-          type: "file",
-          fileName: file.name,
-          fileSize: file.size,
-          status: "uploaded",
-          recordCount: 5000,
-          columns: ["id", "name", "email", "created_at", "value"],
-          createdAt: new Date().toISOString(),
-        }
-
-        setConnections((prev) => {
-          const updated = [...prev, mockConnection]
-          addConnection(mockConnection)
-          return updated
-        })
-
-        stableOnDataConnected(mockConnection)
-
-        toast({
-          title: "Development Mode",
-          description: "Using mock file upload for development",
-        })
-      } else {
+        // Handle API failure
         toast({
           title: "Upload Failed",
-          description: error instanceof Error ? error.message : "Unknown error occurred",
+          description: response.error || "Failed to upload file",
           variant: "destructive",
         })
       }
+    } catch (error) {
+      toast({
+        title: "Upload Failed",
+        description: "Failed to upload file: " + String(error),
+        variant: "destructive",
+      })
     } finally {
       setIsLoading?.(false)
       // Clear the file input

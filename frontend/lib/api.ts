@@ -30,6 +30,39 @@ export interface QualityMetrics {
   volumetry: number
 }
 
+export interface DetailedQualityMetric {
+  score: number
+  issues: string[]
+  recommendations: string[]
+  trend?: string
+}
+
+export interface QualityAnalysisResult {
+  metrics: QualityMetrics
+  detailed_analysis: {
+    completeness: DetailedQualityMetric & {
+      total_missing: number
+      missing_by_column: Record<string, number>
+    }
+    uniqueness: DetailedQualityMetric & {
+      duplicate_rows: number
+      uniqueness_by_column: Record<string, number>
+    }
+    cardinality: DetailedQualityMetric & {
+      column_cardinalities: Record<string, number>
+    }
+    consistency: DetailedQualityMetric & {
+      data_types: Record<string, string>
+    }
+    volumetry: DetailedQualityMetric & {
+      total_rows: number
+      total_columns: number
+      data_size_mb: number
+    }
+  }
+  sample_size: number
+}
+
 export interface AnomalyDetectionResult {
   connection_id: string
   model_type: string
@@ -132,243 +165,14 @@ class ApiClient {
         return { success: true, data }
       } catch (fetchError) {
         clearTimeout(timeoutId)
-        console.warn(" Backend unavailable, using mock data:", fetchError)
-        //return this.getMockResponse<T>(endpoint, options)
+        console.error(" Backend unavailable:", fetchError)
         return { success: false, error: "Backend unavailable", message: String(fetchError) }
       }
     } catch (error) {
-      console.log("API request failed, falling back to mock data:", error)
-      //return this.getMockResponse<T>(endpoint, options)
+      console.error("API request failed:", error)
       return { success: false, error: "API request failed", message: String(error) }
     }
   }
-/*
-  private getMockResponse<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
-    // Simulate network delay
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const mockResponses: Record<string, any> = {
-          "/api/connect/database": {
-            connection_id: `mock-db-${Date.now()}`,
-            message: "Successfully connected to mock database",
-            details: {
-              tables: ["customers", "transactions", "products", "orders", "analytics"],
-              record_count: 15000,
-            },
-          },
-          "/api/connect/file": {
-            connection_id: `mock-file-${Date.now()}`,
-            message: "File uploaded successfully (mock)",
-            details: {
-              filename: "sample-data.csv",
-              size_mb: 2.5,
-              record_count: 5000,
-              columns: ["id", "name", "email", "created_at", "value", "category"],
-            },
-          },
-          "/api/connections": {
-            connections: [
-              {
-                id: "mock-conn-1",
-                type: "database",
-                db_type: "postgresql",
-                status: "connected",
-                record_count: 15000,
-                tables: ["customers", "transactions", "products"],
-              },
-              {
-                id: "mock-conn-2",
-                type: "file",
-                filename: "sample-data.csv",
-                status: "uploaded",
-                record_count: 5000,
-                columns: ["id", "name", "email", "value"],
-              },
-            ],
-          },
-          // Power BI Mock Responses
-          "/api/powerbi/authenticate": {
-            session_id: `mock-session-${Date.now()}`,
-            expires_in: 3600,
-            message: "Successfully authenticated with Power BI (mock)"
-          },
-          "/api/powerbi/workspaces": {
-            workspaces: [
-              {
-                id: "workspace-1",
-                name: "Marketing Analytics",
-                isReadOnly: false,
-                isOnDedicatedCapacity: true
-              },
-              {
-                id: "workspace-2", 
-                name: "Sales Dashboard",
-                isReadOnly: false,
-                isOnDedicatedCapacity: false
-              },
-              {
-                id: "workspace-3",
-                name: "Financial Reports",
-                isReadOnly: true,
-                isOnDedicatedCapacity: true
-              }
-            ]
-          },
-          "/api/powerbi/embed-token": {
-            embed_token: "mock-embed-token-" + Date.now(),
-            embed_url: "https://app.powerbi.com/reportEmbed?reportId=mock-report&groupId=mock-workspace",
-            expires_at: new Date(Date.now() + 3600000).toISOString()
-          }
-        }
-
-        // Handle POST requests with query parameters
-        const baseEndpoint = endpoint.split("?")[0]
-
-        if (options.method === "POST" && baseEndpoint === "/api/analysis/quality-metrics") {
-          resolve({
-            success: true,
-            data: {
-              connection_id: "mock-conn-1",
-              metrics: {
-                completeness: 87.5,
-                uniqueness: 94.2,
-                cardinality: 81.3,
-                consistency: 89.7,
-                volumetry: 96.1,
-              },
-              message: "Quality analysis completed successfully (mock)",
-            } as T,
-          })
-          return
-        }
-
-        if (options.method === "POST" && baseEndpoint === "/api/analysis/anomaly-detection") {
-          resolve({
-            success: true,
-            data: {
-              connection_id: "mock-conn-1",
-              model_type: "VARIMA",
-              anomalies_detected: 23,
-              total_records: 15000,
-              anomaly_details: [
-                {
-                  index: 1234,
-                  anomaly_score: 2.8,
-                  components_affected: ["value1", "value2"],
-                },
-                {
-                  index: 5678,
-                  anomaly_score: 3.2,
-                  components_affected: ["value2", "value3"],
-                },
-                {
-                  index: 9012,
-                  anomaly_score: 2.9,
-                  components_affected: ["value1", "value3"],
-                },
-              ],
-              message: "VARIMA anomaly detection completed (mock)",
-            } as T,
-          })
-          return
-        }
-
-        // Handle dynamic Power BI endpoints
-        if (endpoint.includes("/powerbi/workspaces/") && endpoint.includes("/reports")) {
-          const workspaceId = endpoint.split("/workspaces/")[1]?.split("/")[0]
-          resolve({
-            success: true,
-            data: {
-              reports: [
-                {
-                  id: `report-1-${workspaceId}`,
-                  name: "Customer Analytics Report",
-                  webUrl: "https://app.powerbi.com/reports/report-1",
-                  embedUrl: "https://app.powerbi.com/reportEmbed?reportId=report-1",
-                  datasetId: "dataset-1"
-                },
-                {
-                  id: `report-2-${workspaceId}`, 
-                  name: "Campaign Performance",
-                  webUrl: "https://app.powerbi.com/reports/report-2",
-                  embedUrl: "https://app.powerbi.com/reportEmbed?reportId=report-2",
-                  datasetId: "dataset-2"
-                }
-              ]
-            } as T
-          })
-          return
-        }
-
-        if (endpoint.includes("/powerbi/workspaces/") && endpoint.includes("/datasets")) {
-          const workspaceId = endpoint.split("/workspaces/")[1]?.split("/")[0]
-          resolve({
-            success: true,
-            data: {
-              datasets: [
-                {
-                  id: `dataset-1-${workspaceId}`,
-                  name: "Customer Data",
-                  addRowsAPIEnabled: true,
-                  configuredBy: "admin@company.com",
-                  isRefreshable: true
-                },
-                {
-                  id: `dataset-2-${workspaceId}`,
-                  name: "Marketing Campaigns",
-                  addRowsAPIEnabled: false, 
-                  configuredBy: "marketing@company.com",
-                  isRefreshable: true
-                }
-              ]
-            } as T
-          })
-          return
-        }
-
-        if (options.method === "POST" && endpoint.includes("/powerbi/datasets/") && endpoint.includes("/push-data")) {
-          resolve({
-            success: true,
-            data: {
-              records_pushed: 5,
-              message: "Data pushed to Power BI successfully (mock)"
-            } as T
-          })
-          return
-        }
-        
-        if (endpoint.includes("/powerbi/datasets/") && endpoint.includes("/data")) {
-          resolve({
-            success: true, 
-            data: {
-              connection_id: `mock-powerbi-${Date.now()}`,
-              message: "Power BI dataset data extracted successfully (mock)",
-              details: {
-                dataset_id: "mock-dataset-1",
-                record_count: 8500,
-                columns: ["date", "revenue", "customers", "region", "product_category"]
-              }
-            } as T
-          })
-          return
-        }
-
-        const mockData = mockResponses[baseEndpoint] || mockResponses[endpoint]
-
-        if (mockData) {
-          resolve({ success: true, data: mockData as T })
-        } else {
-          resolve({
-            success: true,
-            data: {
-              message: "Mock response for " + endpoint,
-              timestamp: new Date().toISOString(),
-            } as T,
-          })
-        }
-      }, 500) // Simulate 500ms delay
-    })
-  }*/
 
   // Connection endpoints
   async connectDatabase(data: DatabaseConnectionRequest): Promise<ApiResponse<ConnectionResponse>> {
@@ -409,8 +213,19 @@ class ApiClient {
     return this.request("/api/connections")
   }
 
+  async getConnectionSample(connectionId: string, limit: number = 100): Promise<ApiResponse<{
+    sample: {
+      columns: string[]
+      data: Record<string, any>[]
+      total_rows: number
+      data_types: Record<string, string>
+    }
+  }>> {
+    return this.request(`/api/connections/${connectionId}/sample?limit=${limit}`)
+  }
+
   // Analysis endpoints
-  async runQualityAnalysis(connectionId: string): Promise<ApiResponse<{ metrics: QualityMetrics }>> {
+  async runQualityAnalysis(connectionId: string): Promise<ApiResponse<QualityAnalysisResult>> {
     return this.request(`/api/analysis/quality-metrics?connection_id=${connectionId}`, {
       method: "POST",
     })
