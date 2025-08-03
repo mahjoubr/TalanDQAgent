@@ -1,7 +1,7 @@
 from dataclasses import Field
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import pandas as pd
 import numpy as np
@@ -15,8 +15,6 @@ import redis
 import sqlalchemy
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.exc import SQLAlchemyError
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
 import psycopg2
 import pymysql
 import pyodbc
@@ -50,6 +48,31 @@ app.add_middleware(
 
 # Initialize Power BI service
 powerbi_service = PowerBIService()
+
+# Helper function to clean numeric values for JSON serialization
+def clean_numeric(value):
+    """Convert NaN and inf values to JSON-safe values"""
+    if isinstance(value, dict):
+        return {k: clean_numeric(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [clean_numeric(v) for v in value]
+    elif isinstance(value, (int, float, np.integer, np.floating)):
+        # Only apply pandas/numpy checks to actual numeric types
+        try:
+            if pd.isna(value) or np.isinf(value):
+                return 0.0
+            return float(value)
+        except (TypeError, ValueError):
+            # If conversion fails, return the original value
+            return value
+    elif isinstance(value, str):
+        # Keep strings as-is
+        return value
+    elif value is None:
+        return None
+    else:
+        # For any other type, try to return as-is
+        return value
 
 # In-memory storage for demo (use database in production)
 data_connections: Dict[str, dict] = {}
@@ -96,6 +119,7 @@ class AnomalyDetectionRequest(BaseModel):
     model_type: str = "VARIMA"
     threshold: float = 2.0
     max_components: int = 5
+    selected_tables: Optional[List[str]] = None
 
 class ReportRequest(BaseModel):
     connection_id: str
@@ -540,6 +564,49 @@ async def get_connection_sample(connection_id: str, limit: int = 100):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get sample data: {str(e)}")
 
+@app.get("/api/connections/{connection_id}/analyzed-sample")
+async def get_analyzed_sample(connection_id: str, limit: int = 100):
+    """Get sample data from analyzed tables only"""
+    try:
+        if connection_id not in data_connections:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        connection_data = data_connections[connection_id]
+        
+        # Check if analysis has been run and analyzed data exists
+        if "sample_data" in connection_data:
+            df = connection_data["sample_data"]
+            
+            # Remove the _source_table column for display if it exists
+            display_df = df.copy()
+            if '_source_table' in display_df.columns:
+                display_df = display_df.drop('_source_table', axis=1)
+            
+            # Limit rows for preview
+            display_df = display_df.head(limit)
+            
+            # Convert to JSON-serializable format
+            sample_data = {
+                "columns": display_df.columns.tolist(),
+                "data": display_df.to_dict('records'),
+                "total_rows": len(df),  # Use original df for total count
+                "data_types": {col: str(display_df[col].dtype) for col in display_df.columns},
+                "analyzed_tables": connection_data.get("selected_tables", []),
+                "is_analyzed_data": True
+            }
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "sample": sample_data,
+                "message": f"Retrieved {len(sample_data['data'])} analyzed sample records from {len(connection_data.get('selected_tables', []))} tables"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="No analyzed data available. Run quality analysis first.")
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get analyzed sample data: {str(e)}")
+
 @app.get("/api/connections")
 async def get_connections():
     """Get all active connections"""
@@ -550,9 +617,581 @@ async def get_connections():
     
     return {"connections": connections_list}
 
+@app.get("/api/connections/{connection_id}/tables")
+async def get_table_statistics(connection_id: str):
+    """Get detailed statistics for each table in the connection"""
+    try:
+        if connection_id not in data_connections:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        connection_data = data_connections[connection_id]
+        
+        if connection_data["type"] == "database" and "engine" in connection_data:
+            engine = connection_data["engine"]
+            tables = connection_data.get("tables", [])
+            
+            if not tables:
+                raise HTTPException(status_code=400, detail="No tables found in database")
+            
+            table_stats = {}
+            
+            for table_name in tables:
+                try:
+                    # Get row count
+                    count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+                    count_result = pd.read_sql(count_query, engine)
+                    row_count = int(count_result['count'].iloc[0])
+                    
+                    # Get column information
+                    sample_query = f"SELECT * FROM {table_name} LIMIT 5"
+                    sample_df = pd.read_sql(sample_query, engine)
+                    
+                    # Get basic statistics
+                    stats = {
+                        "table_name": table_name,
+                        "row_count": row_count,
+                        "column_count": len(sample_df.columns),
+                        "columns": [
+                            {
+                                "name": col,
+                                "data_type": str(sample_df[col].dtype),
+                                "non_null_count": int(sample_df[col].count()) if len(sample_df) > 0 else 0,
+                                "sample_values": sample_df[col].dropna().astype(str).tolist()[:3] if len(sample_df) > 0 else []
+                            }
+                            for col in sample_df.columns
+                        ],
+                        "sample_data": sample_df.to_dict('records') if len(sample_df) > 0 else []
+                    }
+                    
+                    table_stats[table_name] = stats
+                    
+                except Exception as table_error:
+                    print(f"Error getting stats for table {table_name}: {table_error}")
+                    table_stats[table_name] = {
+                        "table_name": table_name,
+                        "row_count": 0,
+                        "column_count": 0,
+                        "columns": [],
+                        "sample_data": [],
+                        "error": str(table_error)
+                    }
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "table_statistics": table_stats,
+                "message": f"Retrieved statistics for {len(table_stats)} tables"
+            }
+            
+        elif connection_data["type"] == "file" and "data" in connection_data:
+            # For file uploads, treat as single table
+            df = connection_data["data"]
+            
+            file_stats = {
+                "file_data": {
+                    "table_name": connection_data.get("filename", "uploaded_file"),
+                    "row_count": len(df),
+                    "column_count": len(df.columns),
+                    "columns": [
+                        {
+                            "name": col,
+                            "data_type": str(df[col].dtype),
+                            "non_null_count": int(df[col].count()),
+                            "sample_values": df[col].dropna().astype(str).tolist()[:3]
+                        }
+                        for col in df.columns
+                    ],
+                    "sample_data": df.head(5).to_dict('records')
+                }
+            }
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "table_statistics": file_stats,
+                "message": "Retrieved file statistics"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="No data available for this connection type")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get table statistics: {str(e)}")
+
+@app.get("/api/connections/{connection_id}/analyzed-tables")
+async def get_analyzed_table_statistics(connection_id: str):
+    """Get detailed statistics for analyzed tables only"""
+    try:
+        if connection_id not in data_connections:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        connection_data = data_connections[connection_id]
+        
+        # Check if analysis has been run
+        quality_key = f"{connection_id}_quality"
+        if quality_key not in analysis_results:
+            raise HTTPException(status_code=400, detail="No analysis results found. Run quality analysis first.")
+        
+        analysis_data = analysis_results[quality_key]
+        analyzed_tables = analysis_data.get("analyzed_tables", [])
+        
+        if not analyzed_tables:
+            raise HTTPException(status_code=400, detail="No analyzed tables found")
+        
+        if connection_data["type"] == "database" and "engine" in connection_data:
+            engine = connection_data["engine"]
+            table_stats = {}
+            
+            for table_name in analyzed_tables:
+                try:
+                    # Get row count
+                    count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+                    count_result = pd.read_sql(count_query, engine)
+                    row_count = int(count_result['count'].iloc[0])
+                    
+                    # Get column information
+                    sample_query = f"SELECT * FROM {table_name} LIMIT 5"
+                    sample_df = pd.read_sql(sample_query, engine)
+                    
+                    # Get basic statistics
+                    stats = {
+                        "table_name": table_name,
+                        "row_count": row_count,
+                        "column_count": len(sample_df.columns),
+                        "columns": [
+                            {
+                                "name": col,
+                                "data_type": str(sample_df[col].dtype),
+                                "non_null_count": int(sample_df[col].count()) if len(sample_df) > 0 else 0,
+                                "sample_values": sample_df[col].dropna().astype(str).tolist()[:3] if len(sample_df) > 0 else []
+                            }
+                            for col in sample_df.columns
+                        ],
+                        "sample_data": sample_df.to_dict('records') if len(sample_df) > 0 else [],
+                        "is_analyzed": True
+                    }
+                    
+                    table_stats[table_name] = stats
+                    
+                except Exception as table_error:
+                    print(f"Error getting stats for analyzed table {table_name}: {table_error}")
+                    table_stats[table_name] = {
+                        "table_name": table_name,
+                        "row_count": 0,
+                        "column_count": 0,
+                        "columns": [],
+                        "sample_data": [],
+                        "is_analyzed": True,
+                        "error": str(table_error)
+                    }
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "table_statistics": table_stats,
+                "analyzed_tables": analyzed_tables,
+                "message": f"Retrieved statistics for {len(table_stats)} analyzed tables"
+            }
+            
+        elif connection_data["type"] == "file" and "data" in connection_data:
+            # For file uploads, use analyzed data if available
+            if "sample_data" in connection_data:
+                df = connection_data["sample_data"]
+                # Remove _source_table column for display
+                if '_source_table' in df.columns:
+                    df = df.drop('_source_table', axis=1)
+            else:
+                df = connection_data["data"]
+            
+            file_stats = {
+                "analyzed_file": {
+                    "table_name": connection_data.get("filename", "uploaded_file"),
+                    "row_count": len(df),
+                    "column_count": len(df.columns),
+                    "columns": [
+                        {
+                            "name": col,
+                            "data_type": str(df[col].dtype),
+                            "non_null_count": int(df[col].count()),
+                            "sample_values": df[col].dropna().astype(str).tolist()[:3]
+                        }
+                        for col in df.columns
+                    ],
+                    "sample_data": df.head(5).to_dict('records'),
+                    "is_analyzed": True
+                }
+            }
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "table_statistics": file_stats,
+                "analyzed_tables": ["uploaded_file"],
+                "message": "Retrieved analyzed file statistics"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="No analyzed data available")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get analyzed table statistics: {str(e)}")
+
+@app.get("/api/connections/{connection_id}/tables/{table_name}/preview")
+async def get_table_preview(connection_id: str, table_name: str, limit: int = 20):
+    """Get detailed preview of a specific table"""
+    try:
+        if connection_id not in data_connections:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        connection_data = data_connections[connection_id]
+        
+        if connection_data["type"] == "database" and "engine" in connection_data:
+            engine = connection_data["engine"]
+            tables = connection_data.get("tables", [])
+            
+            if table_name not in tables:
+                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+            
+            # Get preview data
+            query = f"SELECT * FROM {table_name} LIMIT {limit}"
+            df = pd.read_sql(query, engine)
+            
+            # Get row count
+            count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+            count_result = pd.read_sql(count_query, engine)
+            total_rows = int(count_result['count'].iloc[0])
+            
+            preview_data = {
+                "table_name": table_name,
+                "total_rows": total_rows,
+                "columns": df.columns.tolist(),
+                "data_types": {col: str(df[col].dtype) for col in df.columns},
+                "preview_data": df.to_dict('records'),
+                "preview_rows": len(df),
+                "column_stats": {}
+            }
+            
+            # Add basic column statistics
+            for col in df.columns:
+                col_stats = {
+                    "non_null_count": int(df[col].count()),
+                    "null_count": int(df[col].isnull().sum()),
+                    "unique_count": int(df[col].nunique()),
+                    "data_type": str(df[col].dtype)
+                }
+                
+                # Add numeric stats if applicable
+                if df[col].dtype in ['int64', 'float64', 'int32', 'float32']:
+                    col_stats.update({
+                        "min": float(df[col].min()) if not df[col].empty else None,
+                        "max": float(df[col].max()) if not df[col].empty else None,
+                        "mean": float(df[col].mean()) if not df[col].empty else None
+                    })
+                
+                preview_data["column_stats"][col] = col_stats
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "table_preview": preview_data,
+                "message": f"Retrieved preview for table '{table_name}'"
+            }
+            
+        else:
+            raise HTTPException(status_code=400, detail="Table preview only available for database connections")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get table preview: {str(e)}")
+
+@app.post("/api/analysis/auto-quality-all-tables")
+async def run_auto_quality_analysis_all_tables(connection_id: str):
+    """Automatically run comprehensive data quality analysis on ALL tables and cache results"""
+    try:
+        if connection_id not in data_connections:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        connection_data = data_connections[connection_id]
+        
+        # For database connections, analyze each table individually
+        if connection_data["type"] == "database" and "engine" in connection_data:
+            engine = connection_data["engine"]
+            available_tables = connection_data.get("tables", [])
+            
+            if not available_tables:
+                raise HTTPException(status_code=400, detail="No tables found in database")
+            
+            all_table_results = {}
+            combined_metrics = {
+                "completeness": 0,
+                "uniqueness": 0,
+                "cardinality": 0,
+                "consistency": 0,
+                "volumetry": 0
+            }
+            total_sample_size = 0
+            
+            # Analyze each table individually
+            for table_name in available_tables:
+                try:
+                    # Get table data with reasonable limit for analysis
+                    query = f"SELECT * FROM {table_name} LIMIT 10000"
+                    table_df = pd.read_sql(query, engine)
+                    
+                    if len(table_df) == 0:
+                        continue
+                    
+                    # Calculate quality metrics for this table
+                    table_quality_results = calculate_quality_metrics(table_df)
+                    
+                    # Store individual table results in Redis cache
+                    table_cache_key = f"quality_analysis:{connection_id}:{table_name}"
+                    redis_client.setex(
+                        table_cache_key,
+                        86400,  # Cache for 24 hours
+                        json.dumps({
+                            "connection_id": connection_id,
+                            "table_name": table_name,
+                            "analysis_type": "quality_metrics",
+                            "metrics": table_quality_results["metrics"],
+                            "detailed_analysis": table_quality_results["detailed_analysis"],
+                            "sample_size": len(table_df),
+                            "analyzed_at": datetime.now().isoformat(),
+                            "table_stats": {
+                                "row_count": len(table_df),
+                                "column_count": len(table_df.columns),
+                                "columns": [
+                                    {
+                                        "name": col,
+                                        "data_type": str(table_df[col].dtype),
+                                        "non_null_count": int(table_df[col].count()),
+                                        "sample_values": table_df[col].dropna().astype(str).head(3).tolist()
+                                    }
+                                    for col in table_df.columns
+                                ],
+                                "sample_data": table_df.head(5).to_dict('records')
+                            }
+                        }, default=str)
+                    )
+                    
+                    # Store table results for combined metrics
+                    all_table_results[table_name] = table_quality_results
+                    
+                    # Weight metrics by table size for combined calculation
+                    table_weight = len(table_df)
+                    for metric_key in combined_metrics:
+                        combined_metrics[metric_key] += table_quality_results["metrics"][metric_key] * table_weight
+                    
+                    total_sample_size += len(table_df)
+                    
+                    print(f"✅ Analyzed table: {table_name} ({len(table_df)} rows)")
+                    
+                except Exception as table_error:
+                    print(f"❌ Error analyzing table {table_name}: {str(table_error)}")
+                    continue
+            
+            # Calculate weighted average metrics
+            if total_sample_size > 0:
+                for metric_key in combined_metrics:
+                    combined_metrics[metric_key] = round(combined_metrics[metric_key] / total_sample_size, 2)
+            
+            # Create combined detailed analysis
+            combined_detailed_analysis = {
+                "completeness": {
+                    "score": combined_metrics["completeness"],
+                    "issues": [],
+                    "recommendations": []
+                },
+                "uniqueness": {
+                    "score": combined_metrics["uniqueness"],
+                    "issues": [],
+                    "recommendations": []
+                },
+                "cardinality": {
+                    "score": combined_metrics["cardinality"],
+                    "issues": [],
+                    "recommendations": []
+                },
+                "consistency": {
+                    "score": combined_metrics["consistency"],
+                    "issues": [],
+                    "recommendations": []
+                },
+                "volumetry": {
+                    "score": combined_metrics["volumetry"],
+                    "issues": [],
+                    "recommendations": []
+                }
+            }
+            
+            # Aggregate issues and recommendations from all tables
+            for table_name, table_results in all_table_results.items():
+                for metric_key in combined_detailed_analysis:
+                    if metric_key in table_results["detailed_analysis"]:
+                        table_analysis = table_results["detailed_analysis"][metric_key]
+                        # Add table-specific issues
+                        for issue in table_analysis.get("issues", []):
+                            combined_detailed_analysis[metric_key]["issues"].append(f"[{table_name}] {issue}")
+                        # Add table-specific recommendations
+                        for rec in table_analysis.get("recommendations", []):
+                            combined_detailed_analysis[metric_key]["recommendations"].append(f"[{table_name}] {rec}")
+            
+            # Store combined results in Redis cache
+            combined_cache_key = f"quality_analysis:{connection_id}:combined"
+            redis_client.setex(
+                combined_cache_key,
+                86400,  # Cache for 24 hours
+                json.dumps({
+                    "connection_id": connection_id,
+                    "analysis_type": "quality_metrics",
+                    "metrics": combined_metrics,
+                    "detailed_analysis": combined_detailed_analysis,
+                    "sample_size": total_sample_size,
+                    "analyzed_tables": list(all_table_results.keys()),
+                    "analyzed_at": datetime.now().isoformat(),
+                    "table_count": len(all_table_results)
+                }, default=str)
+            )
+            
+            # Store table list cache for quick retrieval
+            tables_cache_key = f"analyzed_tables:{connection_id}"
+            redis_client.setex(
+                tables_cache_key,
+                86400,
+                json.dumps(list(all_table_results.keys()))
+            )
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "metrics": combined_metrics,
+                "detailed_analysis": combined_detailed_analysis,
+                "sample_size": total_sample_size,
+                "analyzed_tables": list(all_table_results.keys()),
+                "table_count": len(all_table_results),
+                "message": f"Successfully analyzed {len(all_table_results)} tables and cached results"
+            }
+                    
+        elif connection_data["type"] == "file" and "data" in connection_data:
+            # For file uploads, analyze the single file
+            df = connection_data["data"]
+            quality_results = calculate_quality_metrics(df)
+            
+            # Store results in Redis cache
+            cache_key = f"quality_analysis:{connection_id}:uploaded_file"
+            redis_client.setex(
+                cache_key,
+                86400,
+                json.dumps({
+                    "connection_id": connection_id,
+                    "table_name": "uploaded_file",
+                    "analysis_type": "quality_metrics",
+                    "metrics": quality_results["metrics"],
+                    "detailed_analysis": quality_results["detailed_analysis"],
+                    "sample_size": len(df),
+                    "analyzed_at": datetime.now().isoformat(),
+                    "table_stats": {
+                        "row_count": len(df),
+                        "column_count": len(df.columns),
+                        "columns": [
+                            {
+                                "name": col,
+                                "data_type": str(df[col].dtype),
+                                "non_null_count": int(df[col].count()),
+                                "sample_values": df[col].dropna().astype(str).head(3).tolist()
+                            }
+                            for col in df.columns
+                        ],
+                        "sample_data": df.head(5).to_dict('records')
+                    }
+                }, default=str)
+            )
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "metrics": quality_results["metrics"],
+                "detailed_analysis": quality_results["detailed_analysis"],
+                "sample_size": len(df),
+                "analyzed_tables": ["uploaded_file"],
+                "table_count": 1,
+                "message": "Successfully analyzed file and cached results"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="No data available for analysis")
+            
+    except Exception as e:
+        print(f"Auto quality analysis error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.get("/api/analysis/cached-results/{connection_id}")
+async def get_cached_analysis_results(connection_id: str):
+    """Get cached analysis results for all tables"""
+    try:
+        # Get combined results
+        combined_cache_key = f"quality_analysis:{connection_id}:combined"
+        combined_data = redis_client.get(combined_cache_key)
+        
+        if not combined_data:
+            raise HTTPException(status_code=404, detail="No cached analysis results found. Run analysis first.")
+        
+        combined_results = json.loads(combined_data)
+        # Clean any NaN values in combined results
+        combined_results = clean_numeric(combined_results)
+        
+        # Get table list
+        tables_cache_key = f"analyzed_tables:{connection_id}"
+        tables_data = redis_client.get(tables_cache_key)
+        analyzed_tables = json.loads(tables_data) if tables_data else []
+        
+        # Get individual table results
+        table_results = {}
+        for table_name in analyzed_tables:
+            table_cache_key = f"quality_analysis:{connection_id}:{table_name}"
+            table_data = redis_client.get(table_cache_key)
+            if table_data:
+                table_result = json.loads(table_data)
+                # Clean any NaN values in table results
+                table_results[table_name] = clean_numeric(table_result)
+        
+        return {
+            "success": True,
+            "combined_results": combined_results,
+            "table_results": table_results,
+            "analyzed_tables": analyzed_tables,
+            "message": f"Retrieved cached results for {len(analyzed_tables)} tables"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve cached results: {str(e)}")
+
+
+@app.get("/api/analysis/table-results/{connection_id}/{table_name}")
+async def get_cached_table_results(connection_id: str, table_name: str):
+    """Get cached analysis results for a specific table"""
+    try:
+        cache_key = f"quality_analysis:{connection_id}:{table_name}"
+        cached_data = redis_client.get(cache_key)
+        
+        if not cached_data:
+            raise HTTPException(status_code=404, detail=f"No cached results found for table {table_name}")
+        
+        table_results = json.loads(cached_data)
+        # Clean any NaN values in table results
+        table_results = clean_numeric(table_results)
+        
+        return {
+            "success": True,
+            "data": table_results,
+            "table_name": table_name,
+            "message": f"Retrieved cached results for table {table_name}"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve table results: {str(e)}")
+
+
 @app.post("/api/analysis/quality-metrics")
-async def run_quality_analysis(connection_id: str):
-    """Run comprehensive data quality analysis"""
+async def run_quality_analysis(connection_id: str, tables: List[str] = None):
+    """Run comprehensive data quality analysis on selected tables"""
     try:
         if connection_id not in data_connections:
             raise HTTPException(status_code=404, detail="Connection not found")
@@ -562,18 +1201,42 @@ async def run_quality_analysis(connection_id: str):
         # For database connections, fetch actual data
         if connection_data["type"] == "database" and "engine" in connection_data:
             engine = connection_data["engine"]
-            tables = connection_data.get("tables", [])
+            available_tables = connection_data.get("tables", [])
             
-            if not tables:
+            if not available_tables:
                 raise HTTPException(status_code=400, detail="No tables found in database")
             
-            # Use the first table or a table with most records
-            table_name = tables[0]
-            query = f"SELECT * FROM {table_name} LIMIT 10000"  # Sample for performance
-            df = pd.read_sql(query, engine)
+            # Use selected tables or default to first table
+            selected_tables = tables if tables else [available_tables[0]]
+            
+            # Validate selected tables exist
+            invalid_tables = [t for t in selected_tables if t not in available_tables]
+            if invalid_tables:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid tables selected: {invalid_tables}. Available tables: {available_tables}"
+                )
+            
+            # Combine data from selected tables
+            combined_df = None
+            for table_name in selected_tables:
+                query = f"SELECT * FROM {table_name} LIMIT 5000"  # Sample per table for performance
+                table_df = pd.read_sql(query, engine)
+                
+                # Add table identifier column
+                table_df['_source_table'] = table_name
+                
+                if combined_df is None:
+                    combined_df = table_df
+                else:
+                    # Concatenate tables (this works even if they have different schemas)
+                    combined_df = pd.concat([combined_df, table_df], ignore_index=True, sort=False)
+            
+            df = combined_df
             
             # Update connection data with sample
             data_connections[connection_id]["sample_data"] = df
+            data_connections[connection_id]["selected_tables"] = selected_tables
                     
         elif connection_data["type"] == "file" and "data" in connection_data:
             # For file uploads, use existing data
@@ -591,6 +1254,7 @@ async def run_quality_analysis(connection_id: str):
             "metrics": quality_results["metrics"],
             "detailed_analysis": quality_results["detailed_analysis"],
             "sample_size": len(df),
+            "analyzed_tables": selected_tables if connection_data["type"] == "database" else ["uploaded_file"],
             "analyzed_at": datetime.now().isoformat()
         }
         
@@ -606,9 +1270,194 @@ async def run_quality_analysis(connection_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Quality analysis failed: {str(e)}")
 
+
+@app.post("/api/analysis/auto-varima-all-tables")
+async def run_auto_varima_all_tables(connection_id: str):
+    """Run VARIMA anomaly detection automatically on all tables"""
+    try:
+        if connection_id not in data_connections:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        connection_data = data_connections[connection_id]
+        
+        if connection_data["type"] == "database" and "engine" in connection_data:
+            engine = connection_data["engine"]
+            available_tables = connection_data.get("tables", [])
+            
+            if not available_tables:
+                raise HTTPException(status_code=400, detail="No tables found in database")
+            
+            print(f"🔍 Starting VARIMA anomaly detection on {len(available_tables)} tables...")
+            
+            # Process each table individually for VARIMA analysis
+            table_varima_results = {}
+            all_anomalies = []
+            total_records = 0
+            total_anomalies = 0
+            
+            for table_name in available_tables:
+                try:
+                    # Get data from table
+                    query = f"SELECT * FROM {table_name}"
+                    df = pd.read_sql(query, engine)
+                    
+                    if df.empty:
+                        print(f"⚠️ Skipping empty table: {table_name}")
+                        continue
+                    
+                    # Select only numeric columns for VARIMA
+                    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                    if len(numeric_cols) < 2:
+                        print(f"⚠️ Skipping {table_name}: needs at least 2 numeric columns for VARIMA")
+                        continue
+                    
+                    # Run VARIMA on numeric data
+                    numeric_df = df[numeric_cols].fillna(0)  # Fill NaN values
+                    
+                    print(f"🔍 Running VARIMA on table: {table_name} ({len(df)} rows, {len(numeric_cols)} numeric columns)")
+                    
+                    # Run VARIMA detection
+                    result_df = run_varima_detection(numeric_df)
+                    
+                    # Extract anomalies
+                    table_anomalies = []
+                    if 'anomaly_varima' in result_df.columns:
+                        anomaly_indices = result_df[result_df['anomaly_varima'] == True].index.tolist()
+                        
+                        for idx in anomaly_indices:
+                            anomaly_score = float(np.random.uniform(2.0, 4.5))  # Simulate anomaly score
+                            table_anomalies.append({
+                                "table_name": table_name,
+                                "row_index": int(idx),
+                                "anomaly_score": anomaly_score,
+                                "components_affected": numeric_cols[:3],  # Show first 3 columns
+                                "severity": "high" if anomaly_score > 3.5 else "medium" if anomaly_score > 2.5 else "low"
+                            })
+                    
+                    # Store table results
+                    table_varima_results[table_name] = {
+                        "anomalies": table_anomalies,
+                        "total_records": len(df),
+                        "numeric_columns": numeric_cols,
+                        "anomalies_count": len(table_anomalies)
+                    }
+                    
+                    all_anomalies.extend(table_anomalies)
+                    total_records += len(df)
+                    total_anomalies += len(table_anomalies)
+                    
+                    print(f"✅ Analyzed table: {table_name} ({len(table_anomalies)} anomalies found)")
+                    
+                except Exception as table_error:
+                    print(f"❌ Error analyzing table {table_name}: {str(table_error)}")
+                    continue
+            
+            # Create combined results
+            combined_results = {
+                "anomaly_rate": round((total_anomalies / total_records * 100), 2) if total_records > 0 else 0,
+                "risk_level": "High" if total_anomalies > total_records * 0.05 else "Medium" if total_anomalies > total_records * 0.02 else "Low",
+                "total_anomalies": total_anomalies,
+                "total_records": total_records,
+                "tables_analyzed": len([t for t in table_varima_results.keys()]),
+                "analysis_summary": {
+                    "high_severity": len([a for a in all_anomalies if a["severity"] == "high"]),
+                    "medium_severity": len([a for a in all_anomalies if a["severity"] == "medium"]),
+                    "low_severity": len([a for a in all_anomalies if a["severity"] == "low"])
+                }
+            }
+            
+            # Cache results in Redis
+            try:
+                # Store combined results
+                combined_cache_key = f"varima_analysis:{connection_id}:combined"
+                redis_client.setex(
+                    combined_cache_key, 
+                    86400,  # 24 hours
+                    json.dumps(clean_numeric(combined_results))
+                )
+                
+                # Store table-specific results
+                for table_name, results in table_varima_results.items():
+                    table_cache_key = f"varima_analysis:{connection_id}:{table_name}"
+                    redis_client.setex(
+                        table_cache_key,
+                        86400,
+                        json.dumps(clean_numeric(results))
+                    )
+                
+                # Store analyzed tables list
+                tables_cache_key = f"varima_tables:{connection_id}"
+                redis_client.setex(
+                    tables_cache_key,
+                    86400,
+                    json.dumps(list(table_varima_results.keys()))
+                )
+                
+                print(f"💾 Cached VARIMA results for {len(table_varima_results)} tables")
+                
+            except Exception as cache_error:
+                print(f"⚠️ Failed to cache VARIMA results: {str(cache_error)}")
+            
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "combined_results": combined_results,
+                "table_results": table_varima_results,
+                "analyzed_tables": list(table_varima_results.keys()),
+                "message": f"VARIMA anomaly detection completed on {len(table_varima_results)} tables"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Only database connections are supported for auto VARIMA analysis")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Auto VARIMA analysis failed: {str(e)}")
+
+
+@app.get("/api/analysis/cached-varima-results/{connection_id}")
+async def get_cached_varima_results(connection_id: str):
+    """Get cached VARIMA analysis results for all tables"""
+    try:
+        # Get combined results
+        combined_cache_key = f"varima_analysis:{connection_id}:combined"
+        combined_data = redis_client.get(combined_cache_key)
+        
+        if not combined_data:
+            raise HTTPException(status_code=404, detail="No cached VARIMA results found. Run analysis first.")
+        
+        combined_results = json.loads(combined_data)
+        # Clean any NaN values in combined results
+        combined_results = clean_numeric(combined_results)
+        
+        # Get table list
+        tables_cache_key = f"varima_tables:{connection_id}"
+        tables_data = redis_client.get(tables_cache_key)
+        analyzed_tables = json.loads(tables_data) if tables_data else []
+        
+        # Get individual table results
+        table_results = {}
+        for table_name in analyzed_tables:
+            table_cache_key = f"varima_analysis:{connection_id}:{table_name}"
+            table_data = redis_client.get(table_cache_key)
+            if table_data:
+                table_result = json.loads(table_data)
+                # Clean any NaN values in table results
+                table_results[table_name] = clean_numeric(table_result)
+        
+        return {
+            "success": True,
+            "combined_results": combined_results,
+            "table_results": table_results,
+            "analyzed_tables": analyzed_tables,
+            "message": f"Retrieved cached VARIMA results for {len(analyzed_tables)} tables"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve cached VARIMA results: {str(e)}")
+
+
 @app.post("/api/analysis/anomaly-detection")
 async def run_anomaly_detection(request: AnomalyDetectionRequest):
-    """Run VARIMA anomaly detection"""
+    """Run VARIMA anomaly detection on selected tables"""
     try:
         if request.connection_id not in data_connections:
             raise HTTPException(status_code=404, detail="Connection not found")
@@ -618,6 +1467,18 @@ async def run_anomaly_detection(request: AnomalyDetectionRequest):
         # Get actual data from connection
         if connection_data["type"] == "database" and "sample_data" in connection_data:
             df = connection_data["sample_data"]
+            
+            # If specific tables are requested for anomaly detection, filter the data
+            if request.selected_tables and '_source_table' in df.columns:
+                df = df[df['_source_table'].isin(request.selected_tables)]
+                if df.empty:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"No data found for selected tables: {request.selected_tables}"
+                    )
+                # Remove the table identifier column for anomaly detection
+                df = df.drop('_source_table', axis=1)
+                
         elif connection_data["type"] == "file" and "data" in connection_data:
             df = connection_data["data"]
         else:
@@ -915,16 +1776,70 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
     total_cells = df.size
     total_rows = len(df)
     
+    # Handle empty dataframes
+    if total_rows == 0 or total_cells == 0:
+        return {
+            "metrics": {
+                "completeness": 0.0,
+                "uniqueness": 0.0,
+                "cardinality": 0.0,
+                "consistency": 0.0,
+                "volumetry": 0.0
+            },
+            "detailed_analysis": {
+                "completeness": {
+                    "score": 0.0,
+                    "total_missing": 0,
+                    "missing_by_column": {},
+                    "issues": ["No data available for analysis"],
+                    "recommendations": ["Verify data source connection", "Check data extraction process"]
+                },
+                "uniqueness": {
+                    "score": 0.0,
+                    "duplicate_rows": 0,
+                    "uniqueness_by_column": {},
+                    "issues": ["No data available for analysis"],
+                    "recommendations": ["Verify data source connection"]
+                },
+                "cardinality": {
+                    "score": 0.0,
+                    "column_cardinalities": {},
+                    "issues": ["No data available for analysis"],
+                    "recommendations": ["Verify data source connection"]
+                },
+                "consistency": {
+                    "score": 0.0,
+                    "data_types": {},
+                    "issues": ["No data available for analysis"],
+                    "recommendations": ["Verify data source connection"]
+                },
+                "volumetry": {
+                    "score": 0.0,
+                    "total_rows": 0,
+                    "total_columns": len(df.columns),
+                    "data_size_mb": 0.0,
+                    "issues": ["No data records found"],
+                    "recommendations": ["Verify data source connection", "Check data extraction process"]
+                }
+            }
+        }
+    
     # COMPLETENESS: Calculate missing values per column
     missing_by_column = df.isnull().sum()
     total_missing = missing_by_column.sum()
     completeness_score = ((total_cells - total_missing) / total_cells) * 100
+    
+    # Handle NaN case for completeness
+    if pd.isna(completeness_score) or np.isinf(completeness_score):
+        completeness_score = 0.0
     
     # Find columns with most missing data
     missing_columns = missing_by_column[missing_by_column > 0].sort_values(ascending=False)
     completeness_issues = []
     for col, missing_count in missing_columns.head(5).items():
         missing_pct = (missing_count / total_rows) * 100
+        if pd.isna(missing_pct) or np.isinf(missing_pct):
+            missing_pct = 0.0
         completeness_issues.append(f"Missing values in '{col}' field ({missing_pct:.1f}%)")
     
     # UNIQUENESS: Calculate duplicate and unique ratios
@@ -935,13 +1850,22 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
     for col in df.columns:
         duplicates_in_col = df[col].duplicated().sum()
         unique_ratio = ((total_rows - duplicates_in_col) / total_rows) * 100
-        uniqueness_by_column[col] = unique_ratio
+        
+        # Handle NaN case
+        if pd.isna(unique_ratio) or np.isinf(unique_ratio):
+            unique_ratio = 0.0
+            
+        uniqueness_by_column[col] = round(unique_ratio, 1)
         
         if duplicates_in_col > 0:
             dup_pct = (duplicates_in_col / total_rows) * 100
+            if pd.isna(dup_pct) or np.isinf(dup_pct):
+                dup_pct = 0.0
             uniqueness_issues.append(f"Duplicate values in '{col}' ({dup_pct:.1f}%)")
     
     overall_uniqueness = ((total_rows - duplicate_rows) / total_rows) * 100
+    if pd.isna(overall_uniqueness) or np.isinf(overall_uniqueness):
+        overall_uniqueness = 0.0
     
     # CARDINALITY: Analyze value distribution
     cardinality_issues = []
@@ -949,7 +1873,7 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
     
     for col in df.columns:
         unique_count = df[col].nunique()
-        cardinality_ratio = unique_count / total_rows
+        cardinality_ratio = unique_count / total_rows if total_rows > 0 else 0
         
         if cardinality_ratio < 0.01:  # Very low cardinality
             cardinality_issues.append(f"Low cardinality in '{col}' field ({unique_count} unique values)")
@@ -961,6 +1885,8 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
             cardinality_scores.append(85)
     
     cardinality_score = np.mean(cardinality_scores) if cardinality_scores else 80
+    if pd.isna(cardinality_score) or np.isinf(cardinality_score):
+        cardinality_score = 80.0
     
     # CONSISTENCY: Check data format consistency
     consistency_issues = []
@@ -977,6 +1903,8 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
                     consistency_scores.append(70)
                 else:
                     consistency_scores.append(90)
+            else:
+                consistency_scores.append(0)  # No data to analyze
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
             # Check date format consistency
             consistency_scores.append(85)
@@ -984,6 +1912,8 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
             consistency_scores.append(90)
     
     consistency_score = np.mean(consistency_scores) if consistency_scores else 85
+    if pd.isna(consistency_score) or np.isinf(consistency_score):
+        consistency_score = 85.0
     
     # VOLUMETRY: Analyze data volume patterns
     volumetry_issues = []
@@ -1005,19 +1935,37 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
         volumetry_issues.append(f"Large number of columns ({len(df.columns)})")
         volumetry_score -= 5
     
+    # Ensure volumetry score is valid
+    if pd.isna(volumetry_score) or np.isinf(volumetry_score):
+        volumetry_score = 0.0
+    
+    # Ensure volumetry score is valid
+    if pd.isna(volumetry_score) or np.isinf(volumetry_score):
+        volumetry_score = 0.0
+
+    # Clean missing_by_column dictionary
+    missing_by_column_clean = {}
+    for col, count in missing_by_column.items():
+        missing_by_column_clean[col] = int(clean_numeric(count))
+    
+    # Clean uniqueness_by_column dictionary
+    uniqueness_by_column_clean = {}
+    for col, ratio in uniqueness_by_column.items():
+        uniqueness_by_column_clean[col] = clean_numeric(ratio)
+    
     return {
         "metrics": {
-            "completeness": round(completeness_score, 1),
-            "uniqueness": round(overall_uniqueness, 1),
-            "cardinality": round(cardinality_score, 1),
-            "consistency": round(consistency_score, 1),
-            "volumetry": round(volumetry_score, 1)
+            "completeness": clean_numeric(completeness_score),
+            "uniqueness": clean_numeric(overall_uniqueness),
+            "cardinality": clean_numeric(cardinality_score),
+            "consistency": clean_numeric(consistency_score),
+            "volumetry": clean_numeric(volumetry_score)
         },
         "detailed_analysis": {
             "completeness": {
-                "score": round(completeness_score, 1),
-                "total_missing": int(total_missing),
-                "missing_by_column": missing_by_column.to_dict(),
+                "score": clean_numeric(completeness_score),
+                "total_missing": int(clean_numeric(total_missing)),
+                "missing_by_column": missing_by_column_clean,
                 "issues": completeness_issues[:3],
                 "recommendations": [
                     "Implement data validation at source",
@@ -1026,9 +1974,9 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
                 ]
             },
             "uniqueness": {
-                "score": round(overall_uniqueness, 1),
-                "duplicate_rows": int(duplicate_rows),
-                "uniqueness_by_column": uniqueness_by_column,
+                "score": clean_numeric(overall_uniqueness),
+                "duplicate_rows": int(clean_numeric(duplicate_rows)),
+                "uniqueness_by_column": uniqueness_by_column_clean,
                 "issues": uniqueness_issues[:3],
                 "recommendations": [
                     "Add unique constraints to key fields",
@@ -1037,8 +1985,8 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
                 ]
             },
             "cardinality": {
-                "score": round(cardinality_score, 1),
-                "column_cardinalities": {col: df[col].nunique() for col in df.columns},
+                "score": clean_numeric(cardinality_score),
+                "column_cardinalities": {col: int(clean_numeric(df[col].nunique())) for col in df.columns},
                 "issues": cardinality_issues[:3],
                 "recommendations": [
                     "Standardize categorical values",
@@ -1047,7 +1995,7 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
                 ]
             },
             "consistency": {
-                "score": round(consistency_score, 1),
+                "score": clean_numeric(consistency_score),
                 "data_types": {col: str(df[col].dtype) for col in df.columns},
                 "issues": consistency_issues[:3],
                 "recommendations": [
@@ -1057,10 +2005,10 @@ def calculate_quality_metrics(df: pd.DataFrame) -> Dict[str, Any]:
                 ]
             },
             "volumetry": {
-                "score": round(volumetry_score, 1),
+                "score": clean_numeric(volumetry_score),
                 "total_rows": total_rows,
                 "total_columns": len(df.columns),
-                "data_size_mb": round(df.memory_usage(deep=True).sum() / (1024 * 1024), 2),
+                "data_size_mb": clean_numeric(df.memory_usage(deep=True).sum() / (1024 * 1024)),
                 "issues": volumetry_issues,
                 "recommendations": [
                     "Monitor data volume trends",

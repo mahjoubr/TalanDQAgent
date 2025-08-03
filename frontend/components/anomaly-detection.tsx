@@ -1,26 +1,44 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
-import { AlertTriangle, Download, Edit, Play, Activity, Zap, Loader2 } from "lucide-react"
+import { AlertTriangle, Download, Edit, Play, Activity, Zap, Loader2, Database } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { apiClient } from "@/lib/api"
 
 interface AnomalyDetectionProps {
   data: any
   qualityMetrics: any
-  setIsLoading: (loading: boolean) => void
+  setIsLoading?: (loading: boolean) => void
+  connections?: any[]
+  onDataConnected?: (data: any) => void
+  onMetricsCalculated?: (metrics: any) => void
 }
 
-export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: AnomalyDetectionProps) {
-  const [selectedModel, setSelectedModel] = useState("")
+export function AnomalyDetection({ 
+  data, 
+  qualityMetrics, 
+  setIsLoading,
+  connections = [],
+  onDataConnected,
+  onMetricsCalculated 
+}: AnomalyDetectionProps) {
+  console.log('AnomalyDetection received data:', data)
+  console.log('AnomalyDetection received connections:', connections)
+  const [selectedModel, setSelectedModel] = useState("VARIMA") // Auto-select VARIMA model
   const [isRunning, setIsRunning] = useState(false)
+  const [hasRunAnalysis, setHasRunAnalysis] = useState(false)
+  const [isLoadingResults, setIsLoadingResults] = useState(false)
+  const [analyzedTables, setAnalyzedTables] = useState<string[]>([])
+  const [tableResults, setTableResults] = useState<Record<string, any>>({})
+  const [selectedTableForView, setSelectedTableForView] = useState<string>("")
   const [varimaThreshold, setVarimaThreshold] = useState([2.0])
   const [anomalies, setAnomalies] = useState([
     {
@@ -35,6 +53,7 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
     },
   ])
   const [varimaResults, setVarimaResults] = useState<any>(null)
+  const [combinedResults, setCombinedResults] = useState<any>(null)
   const [editingAnomaly, setEditingAnomaly] = useState<number | null>(null)
   const { toast } = useToast()
 
@@ -49,17 +68,125 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
     },
   ]
 
-  const runAnomalyDetection = async () => {
-    if (!selectedModel) {
-      toast({
-        title: "Model Selection Required",
-        description: "Please select an anomaly detection model first",
-        variant: "destructive",
-      })
-      return
+  // Get the active connection (prioritize the direct data prop, then latest connection)
+  const getActiveConnection = () => {
+    // If data prop has an ID, use it
+    if (data?.id) {
+      return data
     }
+    
+    // Otherwise, use the latest connection from connections array
+    if (connections && connections.length > 0) {
+      return connections[connections.length - 1]
+    }
+    
+    return null
+  }
 
-    if (!data?.id) {
+  const activeConnection = getActiveConnection()
+
+  // Auto-load cached results when connection becomes available
+  useEffect(() => {
+    const connection = getActiveConnection()
+    
+    if (connection?.id && !isRunning) {
+      console.log('Connection available, loading cached VARIMA results:', connection.id)
+      loadCachedVarimaResults(connection.id)
+    }
+  }, [data?.id, connections, isRunning])
+
+  // Load cached VARIMA analysis results from Redis
+  const loadCachedVarimaResults = async (connectionId: string) => {
+    setIsLoadingResults(true)
+    try {
+      const response = await apiClient.getCachedVarimaResults(connectionId)
+      
+      if (response.success && response.data) {
+        const { combined_results, table_results, analyzed_tables } = response.data
+        
+        // Set combined results
+        if (combined_results) {
+          setCombinedResults(combined_results)
+          setHasRunAnalysis(true)
+          
+          // Notify parent component
+          onMetricsCalculated?.({
+            anomaly_rate: combined_results.anomaly_rate,
+            risk_level: combined_results.risk_level,
+            total_anomalies: combined_results.total_anomalies,
+            total_records: combined_results.total_records,
+            connection_id: connectionId,
+            analyzed_tables: analyzed_tables,
+            tables_count: combined_results.tables_analyzed
+          })
+        }
+        
+        // Set table-specific results
+        setTableResults(table_results || {})
+        setAnalyzedTables(analyzed_tables || [])
+        
+        console.log('Cached VARIMA results loaded:', {
+          tables: analyzed_tables?.length || 0,
+          anomalies: combined_results?.total_anomalies || 0
+        })
+        
+      } else {
+        // No cached results found - show ready state
+        console.log('No cached VARIMA results found for connection:', connectionId)
+        setHasRunAnalysis(false)
+        setCombinedResults(null)
+        setTableResults({})
+        setAnalyzedTables([])
+      }
+    } catch (error) {
+      console.error('Failed to load cached VARIMA results:', error)
+      // Show ready state if no cache available
+      setHasRunAnalysis(false)
+    } finally {
+      setIsLoadingResults(false)
+    }
+  }
+
+  // Auto-run anomaly detection when a new connection becomes available
+  useEffect(() => {
+    const connection = getActiveConnection()
+    
+    if (connection?.id && !hasRunAnalysis && !isRunning && !isLoadingResults) {
+      console.log('Auto-running VARIMA anomaly detection for connection:', connection.id)
+      
+      // Show initial notification
+      toast({
+        title: "VARIMA Analysis Starting",
+        description: "Automatically running VARIMA anomaly detection on all tables in your database...",
+      })
+      
+      // Start analysis after a short delay to show the notification
+      setTimeout(() => {
+        runAutoVarimaAnalysis()
+      }, 2000)
+    }
+  }, [data?.id, connections, hasRunAnalysis, isRunning, isLoadingResults])
+
+  // Reset analysis state when connection changes
+  useEffect(() => {
+    const connection = getActiveConnection()
+    const currentConnectionId = connection?.id
+    
+    // Reset if we have a new connection
+    if (currentConnectionId && currentConnectionId !== data?.id) {
+      setHasRunAnalysis(false)
+      setAnomalies([])
+      setVarimaResults(null)
+      setCombinedResults(null)
+      setTableResults({})
+      setAnalyzedTables([])
+    }
+  }, [data?.id, connections])
+
+  const runAutoVarimaAnalysis = async () => {
+    const connection = getActiveConnection()
+    
+    if (!connection?.id) {
       toast({
         title: "No Data Connection",
         description: "Please connect to a data source first",
@@ -69,15 +196,98 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
     }
 
     setIsRunning(true)
-    setIsLoading(true)
+    setIsLoading?.(true)
 
-    if (selectedModel === "VARIMA") {
-      await runVarimaDetection()
+    try {
+      // Show starting notification
+      toast({
+        title: "Starting VARIMA Analysis",
+        description: "Analyzing all tables for anomalies and caching results...",
+      })
+
+      console.log('Running auto VARIMA analysis for connection:', connection.id)
+      
+      const response = await apiClient.runAutoVarimaAllTables(connection.id)
+
+      if (response.success && response.data) {
+        const analysisData = response.data
+        
+        console.log('Auto VARIMA analysis results:', analysisData)
+        
+        setCombinedResults(analysisData.combined_results)
+        setTableResults(analysisData.table_results || {})
+        setAnalyzedTables(analysisData.analyzed_tables || [])
+        setHasRunAnalysis(true)
+        
+        // Notify parent component with the results
+        onMetricsCalculated?.({
+          anomaly_rate: analysisData.combined_results.anomaly_rate,
+          risk_level: analysisData.combined_results.risk_level,
+          total_anomalies: analysisData.combined_results.total_anomalies,
+          total_records: analysisData.combined_results.total_records,
+          connection_id: connection.id,
+          analyzed_tables: analysisData.analyzed_tables,
+          tables_count: analysisData.combined_results.tables_analyzed
+        })
+
+        // Load the detailed cached results
+        await loadCachedVarimaResults(connection.id)
+
+        toast({
+          title: "VARIMA Analysis Complete!",
+          description: `Successfully analyzed ${analysisData.combined_results.tables_analyzed} tables. Found ${analysisData.combined_results.total_anomalies} anomalies in ${analysisData.combined_results.total_records} records.`,
+        })
+
+      } else {
+        throw new Error(response.error || "API response was not successful")
+      }
+    } catch (error) {
+      console.error("Auto VARIMA analysis failed:", error)
+      
+      toast({
+        title: "Analysis Failed",
+        description: error instanceof Error ? error.message : "Unable to analyze data. Please check your connection and try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsRunning(false)
+      setIsLoading?.(false)
     }
   }
 
-  const runVarimaDetection = async () => {
-    if (!data?.id) {
+  const runAnomalyDetection = async (connectionData?: any) => {
+    const connection = connectionData || getActiveConnection()
+    
+    if (!selectedModel) {
+      toast({
+        title: "Model Selection Required",
+        description: "Please select an anomaly detection model first",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (!connection?.id) {
+      toast({
+        title: "No Data Connection",
+        description: "Please connect to a data source first",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsRunning(true)
+    setIsLoading?.(true)
+
+    if (selectedModel === "VARIMA") {
+      await runVarimaDetection(connection)
+    }
+  }
+
+  const runVarimaDetection = async (connectionData?: any) => {
+    const connection = connectionData || getActiveConnection()
+    
+    if (!connection?.id) {
       toast({
         title: "No Data Connection",
         description: "Please connect to a data source first",
@@ -87,7 +297,17 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
     }
 
     try {
-      const response = await apiClient.runAnomalyDetection(data.id, "VARIMA", varimaThreshold[0], 5)
+      // Use all available tables automatically
+      const selectedTables = connection.details?.tables || []
+      console.log('Running anomaly detection on all tables:', selectedTables)
+      
+      const response = await apiClient.runAnomalyDetection(
+        connection.id, 
+        "VARIMA", 
+        varimaThreshold[0], 
+        5,
+        selectedTables
+      )
 
       if (response.success && response.data) {
         setVarimaResults(response.data)
@@ -106,6 +326,19 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
 
         // Update anomalies list
         setAnomalies((prev) => [...prev.filter((a) => a.model !== "VARIMA"), ...varimaAnomalies])
+
+        // Mark analysis as completed
+        setHasRunAnalysis(true)
+
+        // Notify parent component if callback is provided
+        if (onMetricsCalculated) {
+          onMetricsCalculated({
+            anomalies: varimaAnomalies,
+            results: response.data,
+            model: "VARIMA",
+            threshold: varimaThreshold[0]
+          })
+        }
 
         toast({
           title: "VARIMA Detection Complete",
@@ -126,6 +359,7 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
         variant: "destructive",
       })
     } finally {
+      setIsRunning(false)
       setIsLoading?.(false)
     }
   }
@@ -173,15 +407,73 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
     }
   }
 
+  // Check if we have any VARIMA analysis results to display
+  const hasVarimaResults = hasRunAnalysis && (combinedResults || analyzedTables.length > 0)
+
   return (
     <div className="space-y-8">
+      {/* Connection Status */}
+      {activeConnection && (
+        <Card className="border-0 shadow-lg bg-gradient-to-r from-green-50 to-emerald-50">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg">
+                <Database className="h-5 w-5 text-white" />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-semibold text-green-800">
+                    {activeConnection.type === 'database' ? 'Database' : 'File'} Connected
+                  </h3>
+                  <Badge className="bg-green-100 text-green-700 border-green-200">
+                    {activeConnection.id}
+                  </Badge>
+                </div>
+                <p className="text-sm text-green-600 mt-1">
+                  {activeConnection.type === 'database' ? 
+                    `${activeConnection.database_type || 'Database'} connection established` :
+                    `${activeConnection.file_type || 'File'} ready for analysis`
+                  }
+                </p>
+                {activeConnection.details?.tables && activeConnection.details.tables.length > 0 && (
+                  <div className="mt-2">
+                    <div className="text-xs text-green-600 mb-1">
+                      Available tables ({activeConnection.details.tables.length}):
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {activeConnection.details.tables.map((table: string) => (
+                        <Badge 
+                          key={table} 
+                          variant="outline" 
+                          className="text-xs border-green-300 text-green-700"
+                        >
+                          {table}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-4xl font-bold bg-gradient-to-r from-violet-600 to-pink-600 bg-clip-text text-transparent">
-            AI Anomaly Detection
+            VARIMA Anomaly Detection
           </h2>
-          <p className="text-gray-600 mt-2">Advanced ML models for outlier detection and data cleaning</p>
+          <p className="text-gray-600 mt-2">
+            Advanced multivariate time series anomaly detection with Redis caching
+          </p>
+          {activeConnection && (
+            <p className="text-sm text-blue-600 mt-1">
+              Connected to: {activeConnection.db_type ? `${activeConnection.db_type?.toUpperCase()} Database` : activeConnection.fileName || 'Database'}
+              {analyzedTables.length > 0 && ` • ${analyzedTables.length} tables analyzed`}
+            </p>
+          )}
         </div>
         <div className="flex gap-3">
           <Button
@@ -193,24 +485,219 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
             Export Results
           </Button>
           <Button
-            onClick={runAnomalyDetection}
-            disabled={!selectedModel || isRunning}
+            onClick={() => runAutoVarimaAnalysis()}
+            disabled={isRunning || !activeConnection}
             className="bg-gradient-to-r from-violet-500 to-pink-500 hover:from-violet-600 hover:to-pink-600 text-white shadow-lg"
           >
             {isRunning ? (
-              <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Analyzing...
-              </div>
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Analyzing All Tables...
+              </>
+            ) : hasVarimaResults ? (
+              <>
+                <Play className="mr-2 h-4 w-4" />
+                Re-run VARIMA Analysis
+              </>
             ) : (
               <>
                 <Play className="mr-2 h-4 w-4" />
-                Run Detection
+                Analyze All Tables
               </>
             )}
           </Button>
         </div>
       </div>
+
+      {/* Progress Indicator */}
+      {isRunning && (
+        <Card className="border-0 shadow-lg bg-gradient-to-r from-violet-50 to-pink-50">
+          <CardContent className="p-6">
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <Loader2 className="h-6 w-6 text-violet-500 animate-spin" />
+                <div className="flex-1">
+                  <p className="font-semibold text-violet-800">
+                    Running VARIMA anomaly detection on all tables...
+                  </p>
+                  <p className="text-sm text-violet-600">
+                    Automatically processing all available tables in the database
+                  </p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* VARIMA Results Summary */}
+      {combinedResults && (
+        <Card className="border-0 shadow-lg bg-gradient-to-r from-purple-50 to-violet-50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-xl">
+              <div className="p-2 bg-gradient-to-r from-purple-500 to-violet-500 rounded-lg">
+                <Activity className="h-5 w-5 text-white" />
+              </div>
+              VARIMA Analysis Results
+            </CardTitle>
+            <CardDescription>
+              Anomaly detection summary across all analyzed tables
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-4">
+              <div className="bg-white rounded-lg border border-purple-200 p-4 text-center">
+                <div className="text-2xl font-bold text-purple-700">
+                  {combinedResults.anomaly_rate}%
+                </div>
+                <div className="text-sm text-purple-600">Anomaly Rate</div>
+              </div>
+              <div className="bg-white rounded-lg border border-purple-200 p-4 text-center">
+                <div className="text-2xl font-bold text-violet-700">
+                  {combinedResults.total_anomalies}
+                </div>
+                <div className="text-sm text-violet-600">Total Anomalies</div>
+              </div>
+              <div className="bg-white rounded-lg border border-purple-200 p-4 text-center">
+                <div className="text-2xl font-bold text-pink-700">
+                  {combinedResults.tables_analyzed}
+                </div>
+                <div className="text-sm text-pink-600">Tables Analyzed</div>
+              </div>
+              <div className="bg-white rounded-lg border border-purple-200 p-4 text-center">
+                <div className={`text-2xl font-bold ${
+                  combinedResults.risk_level === 'High' ? 'text-red-600' :
+                  combinedResults.risk_level === 'Medium' ? 'text-yellow-600' : 'text-green-600'
+                }`}>
+                  {combinedResults.risk_level}
+                </div>
+                <div className="text-sm text-gray-600">Risk Level</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Table-specific VARIMA Results */}
+      {activeConnection && analyzedTables.length > 0 && (
+        <Card className="border-0 shadow-lg">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-xl">
+              <div className="p-2 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-lg">
+                <Database className="h-5 w-5 text-white" />
+              </div>
+              Analyzed Tables ({analyzedTables.length})
+            </CardTitle>
+            <CardDescription>
+              VARIMA anomaly detection results by table • Click to view detailed results
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {isLoadingResults ? (
+              <div className="text-center py-8">
+                <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                <p className="text-gray-500">Loading cached VARIMA results...</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {analyzedTables.map((tableName) => {
+                  const tableResult = tableResults[tableName]
+                  return (
+                    <Card 
+                      key={tableName} 
+                      className="border border-purple-300 bg-gradient-to-r from-purple-50 to-violet-50 cursor-pointer hover:shadow-md transition-all"
+                      onClick={() => setSelectedTableForView(selectedTableForView === tableName ? "" : tableName)}
+                    >
+                      <CardHeader className="pb-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 bg-gradient-to-r from-purple-500 to-violet-500 rounded-lg">
+                              <Database className="h-4 w-4 text-white" />
+                            </div>
+                            <div>
+                              <CardTitle className="text-lg text-purple-800">
+                                {tableName}
+                                <Badge className="ml-2 bg-purple-100 text-purple-700 text-xs">
+                                  ✓ VARIMA Analyzed
+                                </Badge>
+                              </CardTitle>
+                              {tableResult && (
+                                <p className="text-sm text-purple-600 mt-1">
+                                  {tableResult.total_records?.toLocaleString() || 0} rows • 
+                                  {tableResult.numeric_columns?.length || 0} numeric columns • 
+                                  <span className={`ml-1 ${
+                                    tableResult.anomalies_count > 10 ? 'text-red-600' :
+                                    tableResult.anomalies_count > 5 ? 'text-yellow-600' : 'text-green-600'
+                                  }`}>
+                                    {tableResult.anomalies_count || 0} anomalies found
+                                  </span>
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {tableResult && (
+                              <Badge variant="outline" className="border-purple-300 text-purple-700 bg-white">
+                                {tableResult.anomalies_count || 0} anomalies
+                              </Badge>
+                            )}
+                            <div className={`transform transition-transform ${selectedTableForView === tableName ? 'rotate-180' : ''}`}>
+                              <div className="w-2 h-2 border-r-2 border-b-2 border-purple-600 transform rotate-45"></div>
+                            </div>
+                          </div>
+                        </div>
+                      </CardHeader>
+                      
+                      {/* Expanded Table Details */}
+                      {selectedTableForView === tableName && tableResult && (
+                        <CardContent className="pt-0">
+                          <div className="space-y-4">
+                            <div className="bg-white rounded border border-purple-200 p-4">
+                              <h4 className="font-semibold text-purple-800 mb-3">Detected Anomalies</h4>
+                              {tableResult.anomalies && tableResult.anomalies.length > 0 ? (
+                                <div className="space-y-2 max-h-48 overflow-y-auto">
+                                  {tableResult.anomalies.map((anomaly: any, index: number) => (
+                                    <div key={index} className="flex items-center justify-between p-2 bg-purple-50 rounded border border-purple-200">
+                                      <div className="flex-1">
+                                        <span className="font-medium text-purple-800">Row {anomaly.row_index}</span>
+                                        <span className="text-xs text-purple-600 ml-2">
+                                          Columns: {anomaly.components_affected?.join(', ')}
+                                        </span>
+                                      </div>
+                                      <div className="text-right">
+                                        <div className={`text-sm font-medium ${
+                                          anomaly.severity === 'high' ? 'text-red-600' :
+                                          anomaly.severity === 'medium' ? 'text-yellow-600' : 'text-green-600'
+                                        }`}>
+                                          Score: {anomaly.anomaly_score?.toFixed(2)}
+                                        </div>
+                                        <Badge className={`text-xs ${
+                                          anomaly.severity === 'high' ? 'bg-red-100 text-red-700' :
+                                          anomaly.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
+                                        }`}>
+                                          {anomaly.severity}
+                                        </Badge>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="text-center py-4 text-gray-500">
+                                  No anomalies detected in this table
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </CardContent>
+                      )}
+                    </Card>
+                  )
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs defaultValue="models" className="space-y-6">
         <TabsList className="grid w-full grid-cols-3 bg-violet-50 p-1 rounded-xl">
@@ -449,6 +936,38 @@ export function AnomalyDetection({ data, qualityMetrics, setIsLoading }: Anomaly
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* No Data State */}
+      {!activeConnection && (
+        <Card className="border-0 shadow-lg">
+          <CardContent className="text-center py-12">
+            <Activity className="h-16 w-16 text-gray-300 mx-auto mb-4" />
+            <h3 className="text-xl font-semibold text-gray-700 mb-2">No Data Source Connected</h3>
+            <p className="text-gray-500 mb-4">Connect to a database to start VARIMA anomaly detection</p>
+            <p className="text-sm text-gray-400">All tables will be analyzed automatically with multivariate time series analysis</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Connection Available but No Analysis State */}
+      {activeConnection && !hasVarimaResults && !isRunning && !isLoadingResults && (
+        <Card className="border-0 shadow-lg bg-gradient-to-r from-purple-50 to-violet-50">
+          <CardContent className="text-center py-12">
+            <AlertTriangle className="h-16 w-16 text-purple-500 mx-auto mb-4" />
+            <h3 className="text-xl font-semibold text-purple-700 mb-2">Ready for VARIMA Analysis</h3>
+            <p className="text-purple-600 mb-4">
+              Connection established to {activeConnection.db_type || 'database'}. Click to run VARIMA anomaly detection on all tables.
+            </p>
+            <Button
+              onClick={() => runAutoVarimaAnalysis()}
+              className="bg-gradient-to-r from-purple-500 to-violet-500 hover:from-purple-600 hover:to-violet-600 text-white"
+            >
+              <Play className="mr-2 h-4 w-4" />
+              Start VARIMA Analysis
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

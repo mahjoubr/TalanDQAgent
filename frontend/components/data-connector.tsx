@@ -31,6 +31,11 @@ interface DatabaseConnection extends BaseConnection {
   port?: number
   database_name: string
   additional_params?: Record<string, any>
+  details?: {
+    tables?: string[]
+    record_counts?: Record<string, number | string>
+    total_records?: number
+  }
 }
 
 // File connection interface
@@ -85,11 +90,11 @@ const removeConnection = (connectionId: string) => {
 export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCompleted }: DataConnectorProps) {
   const [connectionString, setConnectionString] = useState("")
   const [dbType, setDbType] = useState("")
-  const [username, setUsername] = useState("aa")
-  const [password, setPassword] = useState("aa")
-  const [host, setHost] = useState("aa")
-  const [port, setPort] = useState("aa")
-  const [databaseName, setDatabaseName] = useState("aa")
+  const [username, setUsername] = useState("root")
+  const [password, setPassword] = useState("dontgo")
+  const [host, setHost] = useState("localhost")
+  const [port, setPort] = useState("3306")
+  const [databaseName, setDatabaseName] = useState("covoit_db")
   const [isConnecting, setIsConnecting] = useState(false)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [connections, setConnections] = useState<Connection[]>([])
@@ -224,7 +229,8 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
           database_name: databaseName,
           additional_params: {},
           status: "connected",
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          details: response.data.details, // Store table information
         }
 
         setConnections((prev) => {

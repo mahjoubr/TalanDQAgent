@@ -37,14 +37,15 @@ export default function App() {
           </div>
         )
       case "guided":
-        return <GuidedFlow onBack={() => setCurrentView("welcome")} />
+        return <GuidedFlow onBack={() => setCurrentView("welcome")} onViewDashboard={function (): void {
+          throw new Error("Function not implemented.")
+        } } />
       case "dashboard":
         return (
           <DashboardPage
             connections={connections}
             analysisResults={analysisResults}
-            onDataConnected={handleDataConnected}
-          />
+            onDataConnected={handleDataConnected} userData={undefined}          />
         )
       default:
         return (

@@ -6,23 +6,38 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { BarChart3, CheckCircle, XCircle, Play, TrendingUp, AlertCircle, Loader2 } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Label } from "@/components/ui/label"
+import { BarChart3, CheckCircle, XCircle, Play, TrendingUp, AlertCircle, Loader2, Database } from "lucide-react"
 import { apiClient, type QualityAnalysisResult, type DetailedQualityMetric } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
 
 interface DataQualityEngineProps {
   data: any
-  onMetricsCalculated: (metrics: any) => void
+  onMetricsCalculated?: (metrics: any) => void
   setIsLoading?: (loading: boolean) => void
+  connections?: any[]
+  onDataConnected?: (data: any) => void
 }
 
-export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: DataQualityEngineProps) {
+export function DataQualityEngine({ 
+  data, 
+  onMetricsCalculated, 
+  setIsLoading,
+  connections = [],
+  onDataConnected 
+}: DataQualityEngineProps) {
   console.log('DataQualityEngine received data:', data)
+  console.log('DataQualityEngine received connections:', connections)
   
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [currentStep, setCurrentStep] = useState("")
   const [analysisProgress, setAnalysisProgress] = useState(0)
-  const [sampleData, setSampleData] = useState<any>(null)
+  const [hasRunAnalysis, setHasRunAnalysis] = useState(false)
+  const [isLoadingResults, setIsLoadingResults] = useState(false)
+  const [analyzedTables, setAnalyzedTables] = useState<string[]>([])
+  const [tableResults, setTableResults] = useState<Record<string, any>>({})
+  const [selectedTableForView, setSelectedTableForView] = useState<string>("")
   const [metrics, setMetrics] = useState({
     completeness: 0,
     uniqueness: 0,
@@ -67,17 +82,131 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
   const qualitySteps = ["completeness", "uniqueness", "cardinality", "consistency", "volumetry"]
   const { toast } = useToast()
 
-  // Auto-run analysis when data becomes available
-  useEffect(() => {
-    const hasMetrics = Object.values(metrics).some((value) => value > 0)
-    if (data?.id && !isAnalyzing && !hasMetrics) {
-      console.log('Auto-running quality analysis for connected data:', data.id)
-      runQualityAnalysis()
+  // Get the active connection (prioritize the direct data prop, then latest connection)
+  const getActiveConnection = () => {
+    // If data prop has an ID, use it
+    if (data?.id) {
+      return data
     }
-  }, [data?.id]) // Only depend on data.id to avoid infinite loops
+    
+    // Otherwise, use the latest connection from connections array
+    if (connections && connections.length > 0) {
+      return connections[connections.length - 1]
+    }
+    
+    return null
+  }
 
-  const runQualityAnalysis = async () => {
-    if (!data?.id) {
+  const activeConnection = getActiveConnection()
+
+  // Auto-load cached results when connection becomes available
+  useEffect(() => {
+    const connection = getActiveConnection()
+    
+    if (connection?.id && !isAnalyzing) {
+      console.log('Connection available, loading cached results:', connection.id)
+      loadCachedResults(connection.id)
+    }
+  }, [data?.id, connections, isAnalyzing])
+
+  // Load cached analysis results from Redis
+  const loadCachedResults = async (connectionId: string) => {
+    setIsLoadingResults(true)
+    try {
+      const response = await apiClient.getCachedAnalysisResults(connectionId)
+      
+      if (response.success && response.data) {
+        const { combined_results, table_results, analyzed_tables } = response.data
+        
+        // Set combined metrics
+        if (combined_results?.metrics) {
+          setMetrics(combined_results.metrics)
+          setHasRunAnalysis(true)
+          
+          // Set detailed results
+          if (combined_results.detailed_analysis) {
+            const updatedResults: Record<string, DetailedQualityMetric> = {}
+            
+            Object.keys(combined_results.detailed_analysis).forEach((key) => {
+              const analysis = combined_results.detailed_analysis[key as keyof typeof combined_results.detailed_analysis]
+              updatedResults[key] = {
+                score: analysis.score,
+                issues: analysis.issues || [],
+                recommendations: analysis.recommendations || [],
+                trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+              }
+            })
+            
+            setDetailedResults(updatedResults)
+          }
+          
+          // Notify parent component
+          onMetricsCalculated?.({
+            metrics: combined_results.metrics,
+            detailed_analysis: combined_results.detailed_analysis,
+            sample_size: combined_results.sample_size,
+            connection_id: connectionId,
+            analyzed_tables: analyzed_tables,
+            table_count: combined_results.table_count
+          })
+        }
+        
+        // Set table-specific results
+        setTableResults(table_results || {})
+        setAnalyzedTables(analyzed_tables || [])
+        
+        console.log('Cached results loaded:', {
+          tables: analyzed_tables?.length || 0,
+          metrics: combined_results?.metrics
+        })
+        
+      } else {
+        // No cached results found - show ready state
+        console.log('No cached results found for connection:', connectionId)
+        setHasRunAnalysis(false)
+        setMetrics({
+          completeness: 0,
+          uniqueness: 0,
+          cardinality: 0,
+          consistency: 0,
+          volumetry: 0,
+        })
+        setTableResults({})
+        setAnalyzedTables([])
+      }
+    } catch (error) {
+      console.error('Failed to load cached results:', error)
+      // Show ready state if no cache available
+      setHasRunAnalysis(false)
+    } finally {
+      setIsLoadingResults(false)
+    }
+  }
+
+  // Reset analysis state when connection changes
+  useEffect(() => {
+    const connection = getActiveConnection()
+    const currentConnectionId = connection?.id
+    
+    // Reset if we have a new connection
+    if (currentConnectionId && currentConnectionId !== data?.id) {
+      setHasRunAnalysis(false)
+      setAnalyzedTables([])
+      setTableResults({})
+      setMetrics({
+        completeness: 0,
+        uniqueness: 0,
+        cardinality: 0,
+        consistency: 0,
+        volumetry: 0,
+      })
+    }
+  }, [data?.id, connections])
+
+  const runAutoQualityAnalysis = async () => {
+    const connection = getActiveConnection()
+    
+    if (!connection?.id) {
       toast({
         title: "No Data Connection",
         description: "Please connect to a data source first",
@@ -91,37 +220,53 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
     setAnalysisProgress(0)
 
     try {
-      // First, get sample data for preview
-      const sampleResponse = await apiClient.getConnectionSample(data.id, 50)
-      if (sampleResponse.success && sampleResponse.data) {
-        setSampleData(sampleResponse.data.sample)
-      }
+      // Show starting notification
+      toast({
+        title: "Starting Automatic Analysis",
+        description: "Analyzing all tables in the database and caching results...",
+      })
 
-      // Simulate step-by-step analysis
+      // Simulate step-by-step analysis with visual feedback
       for (let i = 0; i < qualitySteps.length; i++) {
         const step = qualitySteps[i]
         setCurrentStep(step)
-        setAnalysisProgress(((i + 1) / qualitySteps.length) * 100)
+        setAnalysisProgress(((i + 1) / qualitySteps.length) * 80) // 80% for UI steps
 
         // Simulate processing time for each step
-        await new Promise((resolve) => setTimeout(resolve, 800))
+        await new Promise((resolve) => setTimeout(resolve, 1000))
       }
 
-      // Call the API for quality analysis
-      const response = await apiClient.runQualityAnalysis(data.id)
+      setCurrentStep("caching results")
+      setAnalysisProgress(85)
+
+      // Call the API for automatic quality analysis on all tables
+      console.log('Running auto quality analysis for connection:', connection.id)
+      
+      const response = await apiClient.runAutoQualityAnalysisAllTables(connection.id)
 
       if (response.success && response.data) {
-        const apiMetrics = response.data.metrics
-        const detailedAnalysis = response.data.detailed_analysis
+        const analysisData = response.data
         
-        setMetrics(apiMetrics)
-        onMetricsCalculated(apiMetrics)
+        console.log('Auto quality analysis results:', analysisData)
+        
+        setMetrics(analysisData.metrics)
+        setHasRunAnalysis(true)
+        
+        // Notify parent component with the results
+        onMetricsCalculated?.({
+          metrics: analysisData.metrics,
+          detailed_analysis: analysisData.detailed_analysis,
+          sample_size: analysisData.sample_size,
+          connection_id: connection.id,
+          analyzed_tables: analysisData.analyzed_tables,
+          table_count: analysisData.table_count
+        })
 
         // Update detailed results with real data from backend
         const updatedResults: Record<string, DetailedQualityMetric> = {}
         
-        Object.keys(detailedAnalysis).forEach((key) => {
-          const analysis = detailedAnalysis[key as keyof typeof detailedAnalysis]
+        Object.keys(analysisData.detailed_analysis).forEach((key) => {
+          const analysis = analysisData.detailed_analysis[key as keyof typeof analysisData.detailed_analysis]
           updatedResults[key] = {
             score: analysis.score,
             issues: analysis.issues || [],
@@ -131,20 +276,28 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
         })
         
         setDetailedResults(updatedResults)
+        setAnalyzedTables(analysisData.analyzed_tables)
+
+        setAnalysisProgress(95)
+        setCurrentStep("loading cached results")
+
+        // Load the detailed cached results
+        await loadCachedResults(connection.id)
 
         toast({
-          title: "Quality Analysis Complete",
-          description: `Analysis completed on ${response.data.sample_size} records from your data source`,
+          title: "Analysis Complete!",
+          description: `Successfully analyzed ${analysisData.table_count} tables with ${analysisData.sample_size} total records. Results cached for fast access.`,
         })
+
       } else {
-        throw new Error("API response was not successful")
+        throw new Error(response.error || "API response was not successful")
       }
     } catch (error) {
-      console.error("Quality analysis failed:", error)
+      console.error("Auto quality analysis failed:", error)
       
       toast({
         title: "Analysis Failed",
-        description: error instanceof Error ? error.message : "Unable to analyze data. Please check your connection.",
+        description: error instanceof Error ? error.message : "Unable to analyze data. Please check your connection and try again.",
         variant: "destructive",
       })
     } finally {
@@ -180,7 +333,7 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
   }
 
   // Check if we have any metrics to display
-  const hasMetrics = Object.values(metrics).some((value) => value > 0)
+  const hasMetrics = hasRunAnalysis && (Object.values(metrics).some((value) => value > 0) || analyzedTables.length > 0)
 
   return (
     <div className="space-y-8">
@@ -190,96 +343,215 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
           <h2 className="text-4xl font-bold bg-gradient-to-r from-indigo-600 to-blue-600 bg-clip-text text-transparent">
             Data Quality Engine
           </h2>
-          <p className="text-gray-600 mt-2">Comprehensive analysis across 5 key quality indicators</p>
+          <p className="text-gray-600 mt-2">Automatic analysis across all database tables with Redis caching</p>
+          {activeConnection && (
+            <p className="text-sm text-blue-600 mt-1">
+              Connected to: {activeConnection.db_type ? `${activeConnection.db_type?.toUpperCase()} Database` : activeConnection.fileName || 'Database'}
+              {analyzedTables.length > 0 && ` • ${analyzedTables.length} tables analyzed`}
+            </p>
+          )}
         </div>
         <Button
-          onClick={runQualityAnalysis}
-          disabled={isAnalyzing || !data}
+          onClick={() => runAutoQualityAnalysis()}
+          disabled={isAnalyzing || !activeConnection}
           className="bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-600 hover:to-blue-600 text-white shadow-lg"
         >
           {isAnalyzing ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Analyzing...
+              Analyzing All Tables...
             </>
           ) : hasMetrics ? (
             <>
               <Play className="mr-2 h-4 w-4" />
-              Re-run Analysis
+              Re-run Auto Analysis
             </>
           ) : (
             <>
               <Play className="mr-2 h-4 w-4" />
-              Run Quality Analysis
+              Analyze All Tables
             </>
           )}
         </Button>
       </div>
 
-      {/* Data Connection Status */}
-      {data && (
-        <Card className="border-0 shadow-lg bg-gradient-to-r from-blue-50 to-indigo-50">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-lg">
-                <CheckCircle className="h-5 w-5 text-white" />
+      {/* Dynamic Table Results Display */}
+      {activeConnection && analyzedTables.length > 0 && (
+        <Card className="border-0 shadow-lg">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-xl">
+              <div className="p-2 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-lg">
+                <Database className="h-5 w-5 text-white" />
               </div>
-              <div className="flex-1">
-                <p className="font-semibold text-blue-800">
-                  Connected to: {data.db_type ? `${data.db_type?.toUpperCase()} Database` : data.fileName || 'Database'}
-                </p>
-                <p className="text-sm text-blue-600">
-                  {data.database_name && `Database: ${data.database_name} • `}
-                  Ready for analysis
-                  {sampleData && (
-                    <span> • {sampleData.columns.length} columns detected</span>
-                  )}
-                </p>
+              Analyzed Tables ({analyzedTables.length})
+            </CardTitle>
+            <CardDescription>
+              Dynamic results from cached analysis • Click on any table to view detailed statistics
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {isLoadingResults ? (
+              <div className="text-center py-8">
+                <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                <p className="text-gray-500">Loading cached results...</p>
               </div>
-              {sampleData && (
-                <div className="text-right">
-                  <Badge className="bg-gradient-to-r from-green-500 to-emerald-500 text-white">
-                    Live Data
-                  </Badge>
-                </div>
-              )}
-              {!hasMetrics && !isAnalyzing && (
-                <div className="text-right">
-                  <Badge className="bg-gradient-to-r from-yellow-500 to-orange-500 text-white">
-                    Auto-Starting...
-                  </Badge>
-                </div>
-              )}
-            </div>
-            
-            {/* Data Preview */}
-            {sampleData && (
-              <div className="mt-4 p-4 bg-white rounded-lg border border-blue-200">
-                <h4 className="font-semibold text-blue-800 mb-3">Data Sample Preview</h4>
-                <div className="overflow-x-auto">
-                  <div className="grid gap-2 text-xs">
-                    <div className="flex gap-2 font-semibold text-blue-700 border-b pb-2">
-                      {sampleData.columns.slice(0, 6).map((col: string) => (
-                        <div key={col} className="min-w-[100px] truncate">{col}</div>
-                      ))}
-                      {sampleData.columns.length > 6 && (
-                        <div className="text-blue-500">+{sampleData.columns.length - 6} more</div>
-                      )}
-                    </div>
-                    {sampleData.data.slice(0, 3).map((row: any, idx: number) => (
-                      <div key={idx} className="flex gap-2 text-gray-700">
-                        {sampleData.columns.slice(0, 6).map((col: string) => (
-                          <div key={col} className="min-w-[100px] truncate">
-                            {row[col] !== null && row[col] !== undefined ? String(row[col]) : '—'}
+            ) : (
+              <div className="space-y-4">
+                {analyzedTables.map((tableName) => {
+                  const tableResult = tableResults[tableName]
+                  return (
+                    <Card 
+                      key={tableName} 
+                      className="border border-green-300 bg-gradient-to-r from-green-50 to-emerald-50 cursor-pointer hover:shadow-md transition-all"
+                      onClick={() => setSelectedTableForView(selectedTableForView === tableName ? "" : tableName)}
+                    >
+                      <CardHeader className="pb-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg">
+                              <Database className="h-4 w-4 text-white" />
+                            </div>
+                            <div>
+                              <CardTitle className="text-lg text-green-800">
+                                {tableName}
+                                <Badge className="ml-2 bg-green-100 text-green-700 text-xs">
+                                  ✓ Analyzed & Cached
+                                </Badge>
+                              </CardTitle>
+                              {tableResult?.table_stats && (
+                                <p className="text-sm text-green-600 mt-1">
+                                  {tableResult.table_stats.row_count?.toLocaleString() || 0} rows • {tableResult.table_stats.column_count || 0} columns
+                                  {tableResult.metrics && (
+                                    <span className="ml-2">
+                                      • Avg Quality: {Math.round((
+                                        tableResult.metrics.completeness + 
+                                        tableResult.metrics.uniqueness + 
+                                        tableResult.metrics.cardinality + 
+                                        tableResult.metrics.consistency + 
+                                        tableResult.metrics.volumetry
+                                      ) / 5)}%
+                                    </span>
+                                  )}
+                                </p>
+                              )}
+                            </div>
                           </div>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <p className="text-xs text-blue-600 mt-2">
-                  Showing 3 of {sampleData.total_rows} total rows
-                </p>
+                          <div className="flex items-center gap-2">
+                            {tableResult?.table_stats && (
+                              <Badge variant="outline" className="border-green-300 text-green-700 bg-white">
+                                {tableResult.table_stats.row_count?.toLocaleString() || 0} records
+                              </Badge>
+                            )}
+                            <div className={`transform transition-transform ${selectedTableForView === tableName ? 'rotate-180' : ''}`}>
+                              <div className="w-2 h-2 border-r-2 border-b-2 border-green-600 transform rotate-45"></div>
+                            </div>
+                          </div>
+                        </div>
+                      </CardHeader>
+                      
+                      {/* Expanded Table Details */}
+                      {selectedTableForView === tableName && tableResult && (
+                        <CardContent className="pt-0">
+                          <Tabs defaultValue="metrics" className="w-full">
+                            <TabsList className="grid w-full grid-cols-3 bg-green-100">
+                              <TabsTrigger value="metrics" className="data-[state=active]:bg-white">
+                                Quality Metrics
+                              </TabsTrigger>
+                              <TabsTrigger value="columns" className="data-[state=active]:bg-white">
+                                Columns ({tableResult.table_stats?.column_count || 0})
+                              </TabsTrigger>
+                              <TabsTrigger value="sample" className="data-[state=active]:bg-white">
+                                Sample Data
+                              </TabsTrigger>
+                            </TabsList>
+                            
+                            <TabsContent value="metrics" className="mt-4">
+                              {tableResult.metrics && (
+                                <div className="grid gap-3 md:grid-cols-5">
+                                  {Object.entries(tableResult.metrics).map(([key, value]) => (
+                                    <div key={key} className="bg-white rounded border border-green-200 p-3 text-center">
+                                      <div className="text-xs text-green-700 capitalize font-medium mb-1">{key}</div>
+                                      <div className={`text-lg font-bold ${getScoreColor(value as number)}`}>
+                                        {value as number}%
+                                      </div>
+                                      <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                        <div
+                                          className={`h-1.5 rounded-full bg-gradient-to-r ${getGradientForMetric(key)}`}
+                                          style={{ width: `${value as number}%` }}
+                                        ></div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </TabsContent>
+                            
+                            <TabsContent value="columns" className="mt-4">
+                              {tableResult.table_stats?.columns && (
+                                <div className="grid gap-2 max-h-48 overflow-y-auto">
+                                  {tableResult.table_stats.columns.map((column: any, index: number) => (
+                                    <div 
+                                      key={index}
+                                      className="flex items-center justify-between p-2 bg-white rounded border border-green-200"
+                                    >
+                                      <div className="flex-1">
+                                        <span className="font-medium text-green-800">{column.name}</span>
+                                        <span className="text-xs text-green-600 ml-2">({column.data_type})</span>
+                                      </div>
+                                      <div className="text-right">
+                                        <div className="text-xs text-green-600">
+                                          {column.non_null_count} non-null
+                                        </div>
+                                        {column.sample_values && column.sample_values.length > 0 && (
+                                          <div className="text-xs text-gray-500 mt-1">
+                                            {column.sample_values.slice(0, 2).join(', ')}
+                                            {column.sample_values.length > 2 && '...'}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </TabsContent>
+                            
+                            <TabsContent value="sample" className="mt-4">
+                              {tableResult.table_stats?.sample_data && tableResult.table_stats.sample_data.length > 0 ? (
+                                <div className="bg-white rounded border border-green-200 p-3 max-h-48 overflow-auto">
+                                  <div className="grid gap-2 text-xs">
+                                    <div className="flex gap-2 font-semibold text-green-700 border-b pb-2">
+                                      {Object.keys(tableResult.table_stats.sample_data[0]).slice(0, 4).map((col: string) => (
+                                        <div key={col} className="min-w-[80px] truncate">{col}</div>
+                                      ))}
+                                      {Object.keys(tableResult.table_stats.sample_data[0]).length > 4 && (
+                                        <div className="text-green-500">
+                                          +{Object.keys(tableResult.table_stats.sample_data[0]).length - 4} more
+                                        </div>
+                                      )}
+                                    </div>
+                                    {tableResult.table_stats.sample_data.slice(0, 3).map((row: any, idx: number) => (
+                                      <div key={idx} className="flex gap-2 text-gray-700">
+                                        {Object.keys(tableResult.table_stats.sample_data[0]).slice(0, 4).map((col: string) => (
+                                          <div key={col} className="min-w-[80px] truncate">
+                                            {row[col] !== null && row[col] !== undefined ? String(row[col]) : '—'}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-center py-4 text-gray-500">
+                                  No sample data available
+                                </div>
+                              )}
+                            </TabsContent>
+                          </Tabs>
+                        </CardContent>
+                      )}
+                    </Card>
+                  )
+                })}
               </div>
             )}
           </CardContent>
@@ -295,10 +567,10 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
                 <Loader2 className="h-6 w-6 text-indigo-500 animate-spin" />
                 <div className="flex-1">
                   <p className="font-semibold text-indigo-800">
-                    Analyzing {currentStep.charAt(0).toUpperCase() + currentStep.slice(1)}...
+                    {currentStep ? `Analyzing ${currentStep.charAt(0).toUpperCase() + currentStep.slice(1)}...` : 'Initializing Analysis...'}
                   </p>
                   <p className="text-sm text-indigo-600">
-                    Processing live database data ({Math.round(analysisProgress)}% complete)
+                    Automatically processing all tables in database ({Math.round(analysisProgress)}% complete)
                   </p>
                 </div>
               </div>
@@ -309,6 +581,41 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
                 ></div>
               </div>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Debug Section - Remove after testing */}
+      {activeConnection && (
+        <Card className="border border-blue-300 bg-blue-50">
+          <CardHeader>
+            <CardTitle className="text-sm text-blue-800">Debug Info (Remove after testing)</CardTitle>
+          </CardHeader>
+          <CardContent className="text-xs space-y-2">
+            <div>hasMetrics: {hasMetrics.toString()}</div>
+            <div>hasRunAnalysis: {hasRunAnalysis.toString()}</div>
+            <div>analyzedTables.length: {analyzedTables.length}</div>
+            <div>metrics: {JSON.stringify(metrics, null, 2)}</div>
+            <div>isAnalyzing: {isAnalyzing.toString()}</div>
+            <div>isLoadingResults: {isLoadingResults.toString()}</div>
+            <div>activeConnection.id: {activeConnection?.id || 'null'}</div>
+            <div>activeConnection.db_type: {activeConnection?.db_type || 'null'}</div>
+            <div>connections.length: {connections?.length || 0}</div>
+            <div>data prop: {JSON.stringify(data, null, 2)}</div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Debug Section for No Connection */}
+      {!activeConnection && (
+        <Card className="border border-red-300 bg-red-50">
+          <CardHeader>
+            <CardTitle className="text-sm text-red-800">No Connection Debug Info</CardTitle>
+          </CardHeader>
+          <CardContent className="text-xs space-y-2">
+            <div>connections.length: {connections?.length || 0}</div>
+            <div>data prop: {JSON.stringify(data, null, 2)}</div>
+            <div>connections: {JSON.stringify(connections, null, 2)}</div>
           </CardContent>
         </Card>
       )}
@@ -390,10 +697,10 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
                     <div className="space-y-3">
                       <h4 className="font-semibold flex items-center gap-2 text-red-700">
                         <AlertCircle className="h-4 w-4" />
-                        Issues Identified
+                        Issues Identified ({result.issues.length})
                       </h4>
                       <div className="space-y-2">
-                        {result.issues.map((issue, index) => (
+                        {result.issues.length > 0 ? result.issues.map((issue, index) => (
                           <div
                             key={index}
                             className="flex items-start gap-2 p-3 bg-red-50 rounded-lg border border-red-200"
@@ -401,14 +708,19 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
                             <XCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
                             <span className="text-sm text-red-800">{issue}</span>
                           </div>
-                        ))}
+                        )) : (
+                          <div className="flex items-center gap-2 p-3 bg-green-50 rounded-lg border border-green-200">
+                            <CheckCircle className="h-4 w-4 text-green-500" />
+                            <span className="text-sm text-green-800">No issues detected</span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
                     <div className="space-y-3">
                       <h4 className="font-semibold flex items-center gap-2 text-green-700">
                         <CheckCircle className="h-4 w-4" />
-                        Recommendations
+                        Recommendations ({result.recommendations.length})
                       </h4>
                       <div className="space-y-2">
                         {result.recommendations.map((rec, index) => (
@@ -431,12 +743,33 @@ export function DataQualityEngine({ data, onMetricsCalculated, setIsLoading }: D
       )}
 
       {/* No Data State */}
-      {!data && (
+      {!activeConnection && (
         <Card className="border-0 shadow-lg">
           <CardContent className="text-center py-12">
             <BarChart3 className="h-16 w-16 text-gray-300 mx-auto mb-4" />
             <h3 className="text-xl font-semibold text-gray-700 mb-2">No Data Source Connected</h3>
-            <p className="text-gray-500 mb-4">Connect to a database or upload a file to start quality analysis</p>
+            <p className="text-gray-500 mb-4">Connect to a database or upload a file to start automatic quality analysis</p>
+            <p className="text-sm text-gray-400">All tables will be analyzed automatically and results cached in Redis</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Connection Available but No Analysis State */}
+      {activeConnection && !hasMetrics && !isAnalyzing && !isLoadingResults && (
+        <Card className="border-0 shadow-lg bg-gradient-to-r from-yellow-50 to-orange-50">
+          <CardContent className="text-center py-12">
+            <AlertCircle className="h-16 w-16 text-yellow-500 mx-auto mb-4" />
+            <h3 className="text-xl font-semibold text-yellow-700 mb-2">Ready for Automatic Analysis</h3>
+            <p className="text-yellow-600 mb-4">
+              Connection established to {activeConnection.db_type || 'database'}. Click to analyze all tables automatically.
+            </p>
+            <Button
+              onClick={() => runAutoQualityAnalysis()}
+              className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white"
+            >
+              <Play className="mr-2 h-4 w-4" />
+              Analyze All Tables Now
+            </Button>
           </CardContent>
         </Card>
       )}

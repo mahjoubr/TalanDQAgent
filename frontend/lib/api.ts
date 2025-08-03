@@ -224,11 +224,142 @@ class ApiClient {
     return this.request(`/api/connections/${connectionId}/sample?limit=${limit}`)
   }
 
+  async getTableStatistics(connectionId: string): Promise<ApiResponse<{
+    table_statistics: Record<string, {
+      table_name: string
+      row_count: number
+      column_count: number
+      columns: Array<{
+        name: string
+        data_type: string
+        non_null_count: number
+        sample_values: string[]
+      }>
+      sample_data: Record<string, any>[]
+      error?: string
+    }>
+  }>> {
+    return this.request(`/api/connections/${connectionId}/tables`)
+  }
+
+  async getAnalyzedTableStatistics(connectionId: string): Promise<ApiResponse<{
+    table_statistics: Record<string, {
+      table_name: string
+      row_count: number
+      column_count: number
+      columns: Array<{
+        name: string
+        data_type: string
+        non_null_count: number
+        sample_values: string[]
+      }>
+      sample_data: Record<string, any>[]
+      error?: string
+    }>
+    analyzed_tables: string[]
+  }>> {
+    return this.request(`/api/connections/${connectionId}/analyzed-tables`)
+  }
+
+  async getAnalyzedSample(connectionId: string, limit: number = 100): Promise<ApiResponse<{
+    sample: {
+      columns: string[]
+      data: Record<string, any>[]
+      total_rows: number
+      data_types: Record<string, string>
+      is_analyzed_data?: boolean
+    }
+  }>> {
+    return this.request(`/api/connections/${connectionId}/analyzed-sample?limit=${limit}`)
+  }
+
+  async getTablePreview(connectionId: string, tableName: string, limit: number = 20): Promise<ApiResponse<{
+    table_preview: {
+      table_name: string
+      total_rows: number
+      columns: string[]
+      data_types: Record<string, string>
+      preview_data: Record<string, any>[]
+      preview_rows: number
+      column_stats: Record<string, {
+        non_null_count: number
+        null_count: number
+        unique_count: number
+        data_type: string
+        min?: number
+        max?: number
+        mean?: number
+      }>
+    }
+  }>> {
+    return this.request(`/api/connections/${connectionId}/tables/${tableName}/preview?limit=${limit}`)
+  }
+
   // Analysis endpoints
-  async runQualityAnalysis(connectionId: string): Promise<ApiResponse<QualityAnalysisResult>> {
-    return this.request(`/api/analysis/quality-metrics?connection_id=${connectionId}`, {
+  async runQualityAnalysis(connectionId: string, selectedTables?: string[]): Promise<ApiResponse<QualityAnalysisResult>> {
+    const params = new URLSearchParams({ connection_id: connectionId })
+    if (selectedTables && selectedTables.length > 0) {
+      selectedTables.forEach(table => params.append('tables', table))
+    }
+    
+    return this.request(`/api/analysis/quality-metrics?${params.toString()}`, {
       method: "POST",
     })
+  }
+
+  async runAutoQualityAnalysisAllTables(connectionId: string): Promise<ApiResponse<QualityAnalysisResult & {
+    table_count: number
+    analyzed_tables: string[]
+  }>> {
+    const params = new URLSearchParams({ connection_id: connectionId })
+    
+    return this.request(`/api/analysis/auto-quality-all-tables?${params.toString()}`, {
+      method: "POST",
+    })
+  }
+
+  async getCachedAnalysisResults(connectionId: string): Promise<ApiResponse<{
+    combined_results: QualityAnalysisResult & {
+      table_count: number
+      analyzed_tables: string[]
+    }
+    table_results: Record<string, QualityAnalysisResult & {
+      table_name: string
+      table_stats: {
+        row_count: number
+        column_count: number
+        columns: Array<{
+          name: string
+          data_type: string
+          non_null_count: number
+          sample_values: string[]
+        }>
+        sample_data: Record<string, any>[]
+      }
+    }>
+    analyzed_tables: string[]
+  }>> {
+    return this.request(`/api/analysis/cached-results/${connectionId}`)
+  }
+
+  async getCachedTableResults(connectionId: string, tableName: string): Promise<ApiResponse<{
+    data: QualityAnalysisResult & {
+      table_name: string
+      table_stats: {
+        row_count: number
+        column_count: number
+        columns: Array<{
+          name: string
+          data_type: string
+          non_null_count: number
+          sample_values: string[]
+        }>
+        sample_data: Record<string, any>[]
+      }
+    }
+    table_name: string
+  }>> {
+    return this.request(`/api/analysis/table-results/${connectionId}/${tableName}`)
   }
 
   async runAnomalyDetection(
@@ -236,6 +367,7 @@ class ApiClient {
     modelType = "VARIMA",
     threshold = 2.0,
     maxComponents = 5,
+    selectedTables?: string[]
   ): Promise<ApiResponse<AnomalyDetectionResult>> {
     return this.request("/api/analysis/anomaly-detection", {
       method: "POST",
@@ -244,8 +376,19 @@ class ApiClient {
         model_type: modelType,
         threshold,
         max_components: maxComponents,
+        selected_tables: selectedTables,
       }),
     })
+  }
+
+  async runAutoVarimaAllTables(connectionId: string): Promise<ApiResponse<any>> {
+    return this.request(`/api/analysis/auto-varima-all-tables?connection_id=${connectionId}`, {
+      method: "POST",
+    })
+  }
+
+  async getCachedVarimaResults(connectionId: string): Promise<ApiResponse<any>> {
+    return this.request(`/api/analysis/cached-varima-results/${connectionId}`)
   }
 
   async getAnalysisResults(connectionId: string): Promise<ApiResponse<any>> {

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
@@ -28,7 +28,7 @@ interface GuidedFlowProps {
   canGoBack?: boolean
   userData?: any
   onComplete?: () => void
-  onViewDashboard: () => void
+  onViewDashboard?: () => void
 }
 
 export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComplete, onViewDashboard }: GuidedFlowProps) {
@@ -36,17 +36,8 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   const [completedSteps, setCompletedSteps] = useState<number[]>([])
   const [stepData, setStepData] = useState<any>({})
   const [isLoading, setIsLoading] = useState(false)
+  const [connections, setConnections] = useState<any[]>([])
   const { toast } = useToast()
-
-  // Show notification when reaching quality analysis step with connected data
-  useEffect(() => {
-    if (currentStep === 1 && stepData[0]?.id) {
-      toast({
-        title: "Quality Analysis Starting",
-        description: "Automatically analyzing your connected database for quality metrics...",
-      })
-    }
-  }, [currentStep, stepData[0]?.id])
 
   const steps = [
     {
@@ -88,64 +79,116 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   const isStepCompleted = completedSteps.includes(currentStep)
   const canProceed = isStepCompleted || currentStep === 0
 
-  const handleStepComplete = (data: any) => {
+  const handleStepComplete = useCallback((data: any) => {
+    console.log('Step completed with data:', { step: currentStep, data })
     setStepData((prev: any) => ({ ...prev, [currentStep]: data }))
     if (!completedSteps.includes(currentStep)) {
       setCompletedSteps((prev) => [...prev, currentStep])
     }
-  }
+  }, [currentStep, completedSteps])
 
-  const handleDataConnected = (data: any) => {
+  const handleDataConnected = useCallback((data: any) => {
     console.log('Data connected in guided flow:', data)
+    
+    // Update connections state
+    if (data.connections) {
+      // If data contains multiple connections
+      setConnections(data.connections)
+    } else if (data.id) {
+      // If data is a single connection
+      setConnections(prev => {
+        const existing = prev.find(conn => conn.id === data.id)
+        if (existing) {
+          return prev // Connection already exists
+        }
+        return [...prev, data]
+      })
+    }
+    
     handleStepComplete(data)
-  }
+    
+    // Show completion message - user must manually click Next to proceed
+    if (currentStep === 0 && data.id) {
+      toast({
+        title: "Connection Established!",
+        description: "Data source connected successfully. Click 'Next' when ready to proceed to Quality Analysis.",
+      })
+    }
+  }, [currentStep, handleStepComplete, toast])
 
-  const handleMetricsCalculated = (metrics: any) => {
+  const handleMetricsCalculated = useCallback((metrics: any) => {
     console.log('Metrics calculated in guided flow:', metrics)
     handleStepComplete(metrics)
     
-    // Show completion message and auto-advance to next step after a delay
+    // Show completion message without auto-advancing
     if (currentStep === 1) {
       toast({
         title: "Quality Analysis Complete!",
-        description: "Your data quality metrics have been calculated. Moving to anomaly detection...",
+        description: "Your data quality metrics have been calculated. Click 'Next' when ready to proceed.",
       })
-      
-      setTimeout(() => {
-        setCurrentStep(2)
-      }, 3000) // 3 second delay to show results
     }
-  }
+  }, [currentStep, handleStepComplete, toast])
 
-  const handleNext = () => {
+  const handleAnomalyDetectionComplete = useCallback((anomalyResults: any) => {
+    console.log('Anomaly detection completed in guided flow:', anomalyResults)
+    handleStepComplete(anomalyResults)
+    
+    // Show completion message without auto-advancing
+    if (currentStep === 2) {
+      toast({
+        title: "Anomaly Detection Complete!",
+        description: `${anomalyResults.anomalies?.length || 0} anomalies detected. Click 'Next' when ready to proceed.`,
+      })
+    }
+  }, [currentStep, handleStepComplete, toast])
+
+  const handleNext = useCallback(() => {
     if (currentStep < steps.length - 1) {
       setCurrentStep(currentStep + 1)
     } else if (onComplete) {
       onComplete()
     }
-  }
+  }, [currentStep, steps.length, onComplete])
 
-  const handlePrevious = () => {
+  const handlePrevious = useCallback(() => {
     if (currentStep > 0) {
       setCurrentStep(currentStep - 1)
     }
-  }
+  }, [currentStep])
 
-  const handleStepClick = (stepIndex: number) => {
+  const handleStepClick = useCallback((stepIndex: number) => {
     if (stepIndex <= Math.max(...completedSteps) + 1) {
       setCurrentStep(stepIndex)
     }
-  }
+  }, [completedSteps])
+
+  // Get the active connection for the current step
+  const getActiveConnection = useCallback(() => {
+    // Prioritize stepData[0] (from DataConnector), then latest connection
+    if (stepData[0]?.id) {
+      return stepData[0]
+    }
+    
+    if (connections.length > 0) {
+      return connections[connections.length - 1]
+    }
+    
+    return null
+  }, [stepData, connections])
 
   const CurrentComponent = currentStepData.component
 
   // Prepare props based on the current step
   const getComponentProps = (): any => {
+    const activeConnection = getActiveConnection()
+    
     const baseProps = {
       onComplete: handleStepComplete,
       isCompleted: isStepCompleted,
       setIsLoading,
     }
+
+    console.log('Generating props for step:', currentStep, 'stepData:', stepData)
 
     switch (currentStep) {
       case 0: // DataConnector
@@ -157,28 +200,28 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
       case 1: // DataQualityEngine
         return {
           ...baseProps,
-          data: stepData[0], // Pass the connected data from step 0
+          data: activeConnection, // Pass the active connection
           onMetricsCalculated: handleMetricsCalculated,
-          qualityMetrics: stepData[currentStep]?.metrics,
-          connections: stepData[0] ? [stepData[0]] : [], // Pass connections from step 0
+          qualityMetrics: stepData[currentStep], // Pass complete quality metrics object
+          connections: connections, // Pass all connections
           onDataConnected: handleDataConnected, // Required by DataConnector interface
         }
       case 2: // AnomalyDetection
         return {
           ...baseProps,
-          data: stepData[0], // Pass the connected data from step 0
-          qualityMetrics: stepData[1]?.metrics,
-          connections: stepData[0] ? [stepData[0]] : [],
+          data: activeConnection, // Pass the active connection
+          qualityMetrics: stepData[1], // Pass complete quality metrics object
+          connections: connections,
           onDataConnected: handleDataConnected, // Required by DataConnector interface
-          onMetricsCalculated: handleMetricsCalculated, // Required by DataQualityEngine interface
+          onMetricsCalculated: handleAnomalyDetectionComplete, // Use specific handler for anomaly detection
         }
       case 3: // ReportGeneration
         return {
           ...baseProps,
-          data: stepData[0], // Pass the connected data from step 0
-          qualityMetrics: stepData[1]?.metrics,
-          anomalyResults: stepData[2],
-          connections: stepData[0] ? [stepData[0]] : [],
+          data: activeConnection, // Pass the active connection
+          qualityMetrics: stepData[1], // Pass the complete quality metrics object
+          varimaResults: stepData[2], // Use varimaResults instead of anomalyResults
+          connections: connections,
           onDataConnected: handleDataConnected, // Required by DataConnector interface
           onMetricsCalculated: handleMetricsCalculated, // Required by DataQualityEngine interface
         }
@@ -235,6 +278,12 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
               <Badge variant="secondary" className="bg-blue-100 text-blue-700">
                 Step {currentStep + 1} of {steps.length}
               </Badge>
+
+              {connections.length > 0 && (
+                <Badge variant="outline" className="border-green-300 text-green-700">
+                  {connections.length} Connection{connections.length > 1 ? 's' : ''} Active
+                </Badge>
+              )}
 
               {onNavigateTo && (
                 <Button
