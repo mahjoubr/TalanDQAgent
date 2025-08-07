@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge"
 import { FileText, Download, Loader2, Database, Activity, BarChart3 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { apiClient } from "@/lib/api"
+import jsPDF from "jspdf"
+import JSZip from "jszip"
 
 interface ReportGenerationProps {
   qualityMetrics: any
@@ -22,6 +24,8 @@ export function ReportGeneration({
   data 
 }: ReportGenerationProps) {
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isExportingCleanData, setIsExportingCleanData] = useState(false)
+  const [isExportingStatistics, setIsExportingStatistics] = useState(false)
   const { toast } = useToast()
 
   // Debug logging to see what data we're receiving
@@ -57,45 +61,121 @@ export function ReportGeneration({
 
     setIsGenerating(true)
     try {
-      // Simulate PDF generation with collected data
-      await new Promise((resolve) => setTimeout(resolve, 3000))
+      // Simulate processing time
+      await new Promise((resolve) => setTimeout(resolve, 2000))
       
-      // Create a comprehensive PDF report content
-      const reportContent = {
-        connection_id: activeConnection.id,
-        database_type: activeConnection.db_type || 'Database',
-        generated_at: new Date().toISOString(),
-        quality_metrics: qualityMetrics,
-        varima_results: varimaResults,
-        tables_analyzed: qualityMetrics?.analyzed_tables || [],
-        total_anomalies: varimaResults?.total_anomalies || 0,
-        quality_summary: {
-          completeness: qualityMetrics?.metrics?.completeness || 0,
-          uniqueness: qualityMetrics?.metrics?.uniqueness || 0,
-          cardinality: qualityMetrics?.metrics?.cardinality || 0,
-          consistency: qualityMetrics?.metrics?.consistency || 0,
-          volumetry: qualityMetrics?.metrics?.volumetry || 0,
-        }
+      // Create PDF document
+      const pdf = new jsPDF()
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const margin = 20
+      let yPosition = margin
+
+      // Helper function to add text with wrapping
+      const addText = (text: string, size: number = 12, style: 'normal' | 'bold' = 'normal') => {
+        pdf.setFontSize(size)
+        pdf.setFont('helvetica', style)
+        pdf.text(text, margin, yPosition)
+        yPosition += size * 0.6 + 5
       }
 
-      // Create downloadable PDF (simulated)
-      const blob = new Blob([JSON.stringify(reportContent, null, 2)], { 
-        type: 'application/json' 
-      })
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `data_quality_varima_report_${activeConnection.id}_${new Date().toISOString().slice(0, 10)}.json`
-      a.click()
+      // Helper function to add line
+      const addLine = () => {
+        pdf.line(margin, yPosition, pageWidth - margin, yPosition)
+        yPosition += 10
+      }
+
+      // Header
+      addText('DATA QUALITY & VARIMA ANALYSIS REPORT', 18, 'bold')
+      addText(`Generated: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, 10)
+      addText(`Connection: ${activeConnection.db_type || 'Database'} • ${activeConnection.id}`, 10)
+      addLine()
+
+      // Executive Summary
+      addText('EXECUTIVE SUMMARY', 16, 'bold')
+      addText(`Tables Analyzed: ${tablesCount}`)
+      addText(`Overall Quality Score: ${overallQuality}%`)
+      addText(`Total Anomalies Found: ${anomaliesCount}`)
+      addText(`Risk Level: ${varimaResults?.risk_level || 'N/A'}`)
+      addLine()
+
+      // Data Quality Metrics
+      addText('DATA QUALITY METRICS', 16, 'bold')
+      if (qualityMetrics?.metrics) {
+        addText(`Completeness: ${qualityMetrics.metrics.completeness || 0}%`)
+        addText(`Uniqueness: ${qualityMetrics.metrics.uniqueness || 0}%`)
+        addText(`Cardinality: ${qualityMetrics.metrics.cardinality || 0}%`)
+        addText(`Consistency: ${qualityMetrics.metrics.consistency || 0}%`)
+        addText(`Volumetry: ${qualityMetrics.metrics.volumetry || 0}%`)
+      } else {
+        addText('No quality metrics available')
+      }
+      addLine()
+
+      // VARIMA Analysis
+      addText('ANOMALY DETECTION (VARIMA)', 16, 'bold')
+      if (varimaResults) {
+        addText(`Anomaly Rate: ${varimaResults.anomaly_rate || 0}%`)
+        addText(`Total Anomalies: ${varimaResults.total_anomalies || 0}`)
+        addText(`Total Records: ${varimaResults.total_records || 0}`)
+        addText(`Risk Assessment: ${varimaResults.risk_level || 'Unknown'}`)
+      } else {
+        addText('No VARIMA analysis results available')
+      }
+      addLine()
+
+      // Tables Analyzed
+      addText('TABLES ANALYZED', 16, 'bold')
+      const tables = qualityMetrics?.analyzed_tables || []
+      if (tables.length > 0) {
+        tables.forEach((table: string, index: number) => {
+          addText(`${index + 1}. ${table}`)
+        })
+      } else {
+        addText('No tables found')
+      }
+
+      // Check if we need a new page
+      if (yPosition > 250) {
+        pdf.addPage()
+        yPosition = margin
+      }
+      
+      addLine()
+      addText('RECOMMENDATIONS', 16, 'bold')
+      
+      if (overallQuality < 70) {
+        addText('• Focus on data quality improvement - overall score is below acceptable threshold')
+      }
+      if (anomaliesCount > 0) {
+        addText('• Investigate anomalies found by VARIMA analysis for potential data issues')
+      }
+      if (qualityMetrics?.metrics) {
+        if (qualityMetrics.metrics.completeness < 90) {
+          addText('• Address missing data to improve completeness score')
+        }
+        if (qualityMetrics.metrics.uniqueness < 95) {
+          addText('• Review duplicate records to improve uniqueness')
+        }
+      }
+      
+      // Footer
+      yPosition = 280
+      pdf.setFontSize(8)
+      pdf.text('Generated by Data Quality Agent - Automated Analysis Report', margin, yPosition)
+
+      // Save the PDF
+      const fileName = `data_quality_varima_report_${activeConnection.id}_${new Date().toISOString().slice(0, 10)}.pdf`
+      pdf.save(fileName)
       
       toast({
         title: "PDF Report Generated",
-        description: `Comprehensive report including ${reportContent.tables_analyzed.length} tables, quality metrics, and VARIMA anomaly analysis`,
+        description: `Comprehensive PDF report downloaded: ${fileName}`,
       })
     } catch (error) {
+      console.error('PDF generation error:', error)
       toast({
         title: "Report Generation Failed", 
-        description: "Unable to generate report. Please try again.",
+        description: "Unable to generate PDF report. Please try again.",
         variant: "destructive",
       })
     } finally {
@@ -103,7 +183,7 @@ export function ReportGeneration({
     }
   }
 
-  const generateExcelReport = async () => {
+  const exportCleanedData = async () => {
     if (!activeConnection?.id) {
       toast({
         title: "No Connection",
@@ -113,74 +193,176 @@ export function ReportGeneration({
       return
     }
 
-    setIsGenerating(true)
+    setIsExportingCleanData(true)
     try {
-      // Simulate Excel generation with collected data
-      await new Promise((resolve) => setTimeout(resolve, 2500))
+      const response = await apiClient.exportCleanedData(activeConnection.id)
       
-      // Create Excel-formatted data structure
-      const excelData = {
-        summary: {
-          connection_id: activeConnection.id,
-          database_type: activeConnection.db_type || 'Database',
-          generated_at: new Date().toISOString(),
-          tables_count: qualityMetrics?.analyzed_tables?.length || 0,
-          total_records: qualityMetrics?.sample_size || 0,
-          total_anomalies: varimaResults?.total_anomalies || 0,
-          anomaly_rate: varimaResults?.anomaly_rate || 0,
-          risk_level: varimaResults?.risk_level || 'Unknown'
-        },
-        quality_metrics: qualityMetrics?.metrics || {},
-        quality_details: qualityMetrics?.detailed_analysis || {},
-        varima_summary: varimaResults || {},
-        tables_analyzed: qualityMetrics?.analyzed_tables || []
+      if (response.success && response.data) {
+        const cleanedData = response.data
+        
+        // Create ZIP package with all cleaned tables and summary
+        const zip = new JSZip()
+        
+        // Add individual CSV files for each cleaned table
+        Object.entries(cleanedData.cleaned_tables).forEach(([tableName, tableData]) => {
+          // Convert table data to CSV format
+          if (tableData.data && tableData.data.length > 0) {
+            const headers = tableData.columns.join(',')
+            const rows = tableData.data.map((row: any) => 
+              tableData.columns.map((col: string) => {
+                const value = row[col]
+                // Handle values that might contain commas or quotes
+                if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
+                  return `"${value.replace(/"/g, '""')}"`
+                }
+                return value ?? ''
+              }).join(',')
+            ).join('\n')
+            
+            const csvContent = `${headers}\n${rows}`
+            zip.file(`tables/${tableName}_cleaned.csv`, csvContent)
+          }
+        })
+        
+        // Create comprehensive summary report
+        const summaryContent = [
+          "=== CLEANED DATABASE EXPORT SUMMARY ===",
+          "",
+          `Database Type: ${cleanedData.database_type}`,
+          `Connection ID: ${cleanedData.connection_id}`,
+          `Export Timestamp: ${new Date(cleanedData.export_timestamp).toLocaleString()}`,
+          "",
+          "=== OVERALL CLEANING STATISTICS ===",
+          `Total Tables Processed: ${cleanedData.cleaning_summary.total_tables}`,
+          `Successfully Cleaned: ${cleanedData.cleaning_summary.successfully_cleaned}`,
+          `Total Original Records: ${cleanedData.cleaning_summary.original_records}`,
+          `Total Cleaned Records: ${cleanedData.cleaning_summary.cleaned_records}`,
+          `Total Removed Records: ${cleanedData.cleaning_summary.removed_records}`,
+          `Overall Cleaning Efficiency: ${cleanedData.cleaning_summary.cleaning_efficiency}%`,
+          "",
+          "=== INDIVIDUAL TABLE DETAILS ===",
+          "",
+          ...Object.entries(cleanedData.cleaned_tables).map(([tableName, tableData]) => [
+            `Table: ${tableName}`,
+            `  - Original Records: ${tableData.original_records}`,
+            `  - Cleaned Records: ${tableData.cleaned_records}`,
+            `  - Removed Records: ${tableData.removed_records}`,
+            `  - Cleaning Efficiency: ${tableData.cleaning_efficiency}%`,
+            `  - Columns (${tableData.columns.length}): ${tableData.columns.join(', ')}`,
+            ""
+          ]).flat(),
+          "=== CLEANING PROCESS DETAILS ===",
+          "",
+          "The cleaning process involved two main steps:",
+          "1. Data Quality Cleaning:",
+          "   - Removal of completely null rows",
+          "   - Removal of duplicate records", 
+          "   - Outlier detection using Interquartile Range (IQR) method",
+          "",
+          "2. VARIMA Anomaly Detection:",
+          "   - Statistical analysis of time-series patterns",
+          "   - Identification and removal of anomalous data points",
+          "   - Applied to tables with sufficient numeric data (≥2 numeric columns, ≥10 records)",
+          "",
+          "=== FILE STRUCTURE ===",
+          "",
+          "This export package contains:",
+          "- README.txt: This summary document",
+          "- summary.csv: Tabular summary of cleaning statistics",
+          "- tables/: Directory containing individual cleaned table CSV files",
+          "  " + Object.keys(cleanedData.cleaned_tables).map(name => `${name}_cleaned.csv`).join('\n  '),
+          "",
+          "Each CSV file contains the complete cleaned dataset for that table,",
+          "with all quality issues and anomalies removed according to the",
+          "cleaning process described above.",
+          ""
+        ].join("\n")
+        
+        zip.file("README.txt", summaryContent)
+        
+        // Create CSV summary for spreadsheet analysis
+        const csvSummary = [
+          "Table Name,Original Records,Cleaned Records,Removed Records,Cleaning Efficiency (%),Column Count",
+          ...Object.entries(cleanedData.cleaned_tables).map(([tableName, tableData]) => 
+            `${tableName},${tableData.original_records},${tableData.cleaned_records},${tableData.removed_records},${tableData.cleaning_efficiency},${tableData.columns.length}`
+          )
+        ].join("\n")
+        
+        zip.file("summary.csv", csvSummary)
+        
+        // Generate and download the ZIP file
+        const zipBlob = await zip.generateAsync({type: "blob"})
+        const url = window.URL.createObjectURL(zipBlob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `cleaned_data_export_${activeConnection.id}_${new Date().toISOString().slice(0, 10)}.zip`
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+        
+        toast({
+          title: "Complete Data Export Ready!",
+          description: `Exported ${cleanedData.cleaning_summary.successfully_cleaned} cleaned tables with ${cleanedData.cleaning_summary.cleaned_records} total records. Download includes individual CSV files and comprehensive summary.`,
+        })
+      } else {
+        throw new Error("Failed to export cleaned data")
       }
-
-      // Create downloadable Excel (simulated as CSV)
-      const csvContent = [
-        "Data Quality & VARIMA Analysis Report",
-        "",
-        "=== SUMMARY ===",
-        `Connection ID,${excelData.summary.connection_id}`,
-        `Database Type,${excelData.summary.database_type}`,
-        `Generated At,${excelData.summary.generated_at}`,
-        `Tables Analyzed,${excelData.summary.tables_count}`,
-        `Total Records,${excelData.summary.total_records}`,
-        `Total Anomalies,${excelData.summary.total_anomalies}`,
-        `Anomaly Rate,${excelData.summary.anomaly_rate}%`,
-        `Risk Level,${excelData.summary.risk_level}`,
-        "",
-        "=== QUALITY METRICS ===",
-        `Completeness,${excelData.quality_metrics.completeness || 0}%`,
-        `Uniqueness,${excelData.quality_metrics.uniqueness || 0}%`,
-        `Cardinality,${excelData.quality_metrics.cardinality || 0}%`,
-        `Consistency,${excelData.quality_metrics.consistency || 0}%`,
-        `Volumetry,${excelData.quality_metrics.volumetry || 0}%`,
-        "",
-        "=== ANALYZED TABLES ===",
-        "Table Name",
-        ...excelData.tables_analyzed
-      ].join("\n")
-
-      const blob = new Blob([csvContent], { type: 'text/csv' })
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `data_quality_varima_report_${activeConnection.id}_${new Date().toISOString().slice(0, 10)}.csv`
-      a.click()
-      
-      toast({
-        title: "Excel Report Generated",
-        description: `Spreadsheet report with ${excelData.summary.tables_count} tables analysis and anomaly detection results`,
-      })
     } catch (error) {
       toast({
-        title: "Report Generation Failed",
-        description: "Unable to generate Excel report. Please try again.",
+        title: "Export Failed",
+        description: "Unable to export cleaned data. Please try again.",
         variant: "destructive",
       })
     } finally {
-      setIsGenerating(false)
+      setIsExportingCleanData(false)
+    }
+  }
+
+  const exportAnalysisStatistics = async () => {
+    if (!activeConnection) {
+      toast({
+        title: "No Connection",
+        description: "Please establish a connection first.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsExportingStatistics(true)
+    try {
+      const response = await apiClient.exportAnalysisStatistics(activeConnection.id)
+      
+      if (response.success && response.data) {
+        const { csv_data, overall_statistics, table_statistics } = response.data
+        
+        // Create and download the CSV file
+        const blob = new Blob([csv_data], { type: 'text/csv;charset=utf-8;' })
+        const link = document.createElement('a')
+        const url = URL.createObjectURL(blob)
+        link.setAttribute('href', url)
+        link.setAttribute('download', `analysis_statistics_${activeConnection.id}_${new Date().toISOString().split('T')[0]}.csv`)
+        link.style.visibility = 'hidden'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        
+        toast({
+          title: "Statistics Exported Successfully",
+          description: `Analysis statistics exported for ${table_statistics.length} table(s) with ${overall_statistics.overall_risk_level} risk level (${overall_statistics.overall_risk_percentage}% risk). Overall quality: ${overall_statistics.overall_quality_score}/100.`,
+        })
+      } else {
+        throw new Error("Failed to export analysis statistics")
+      }
+    } catch (error) {
+      console.error("Export statistics error:", error)
+      toast({
+        title: "Export Failed",
+        description: "Unable to export analysis statistics. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsExportingStatistics(false)
     }
   }
 
@@ -294,7 +476,7 @@ export function ReportGeneration({
       )}
 
       {/* Report Generation */}
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid gap-6 md:grid-cols-3">
         <Card className="border-0 shadow-lg">
           <div className="h-2 bg-gradient-to-r from-red-500 to-pink-500 rounded-t-lg"></div>
           <CardHeader>
@@ -347,50 +529,101 @@ export function ReportGeneration({
         </Card>
 
         <Card className="border-0 shadow-lg">
-          <div className="h-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-t-lg"></div>
+          <div className="h-2 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-t-lg"></div>
           <CardHeader>
             <CardTitle className="flex items-center gap-3 text-xl">
-              <div className="p-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg">
-                <FileText className="h-5 w-5 text-white" />
+              <div className="p-2 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-lg">
+                <Database className="h-5 w-5 text-white" />
               </div>
-              Excel Report
+              Clean Data Export
             </CardTitle>
             <CardDescription>
-              Structured Excel/CSV report with data tables and analysis results
+              Export cleaned data after quality analysis and VARIMA anomaly removal
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <h4 className="font-semibold text-gray-700">Includes:</h4>
+              <h4 className="font-semibold text-gray-700">Cleaning Process:</h4>
               <div className="space-y-1 text-sm text-gray-600">
                 <div className="flex items-center gap-2">
                   <Database className="h-4 w-4 text-green-500" />
-                  <span>Table-by-table quality breakdown</span>
+                  <span>Remove null records & duplicates</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Activity className="h-4 w-4 text-purple-500" />
-                  <span>Anomaly details and scores</span>
+                  <span>VARIMA-based anomaly removal</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <BarChart3 className="h-4 w-4 text-blue-500" />
-                  <span>Summary statistics and trends</span>
+                  <span>Statistical outlier filtering</span>
                 </div>
               </div>
             </div>
             <Button
-              onClick={generateExcelReport}
-              disabled={isGenerating || !hasData}
-              className="w-full bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+              onClick={exportCleanedData}
+              disabled={isExportingCleanData || !activeConnection}
+              className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white"
             >
-              {isGenerating ? (
+              {isExportingCleanData ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Generating Excel...
+                  Exporting Clean Data...
                 </>
               ) : (
                 <>
                   <Download className="mr-2 h-4 w-4" />
-                  Generate Excel Report
+                  Export Clean Data
+                </>
+              )}
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="border-0 shadow-lg">
+          <div className="h-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-t-lg"></div>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-3 text-xl">
+              <div className="p-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg">
+                <BarChart3 className="h-5 w-5 text-white" />
+              </div>
+              Analysis Statistics Export
+            </CardTitle>
+            <CardDescription>
+              Export comprehensive statistics including quality metrics, anomaly detection results, and risk assessment
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <h4 className="font-semibold text-gray-700">Statistics Include:</h4>
+              <div className="space-y-1 text-sm text-gray-600">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-green-500" />
+                  <span>Quality metrics (5 indicators)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-purple-500" />
+                  <span>VARIMA anomaly detection results</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Database className="h-4 w-4 text-blue-500" />
+                  <span>Data source information & risk assessment</span>
+                </div>
+              </div>
+            </div>
+            <Button
+              onClick={exportAnalysisStatistics}
+              disabled={isExportingStatistics || !activeConnection}
+              className="w-full bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+            >
+              {isExportingStatistics ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Exporting Statistics...
+                </>
+              ) : (
+                <>
+                  <Download className="mr-2 h-4 w-4" />
+                  Export Analysis Statistics
                 </>
               )}
             </Button>

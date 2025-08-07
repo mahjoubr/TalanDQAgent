@@ -515,6 +515,94 @@ async getStoredConnections(email: string): Promise<ApiResponse<{
 }>> {
   return this.request(`/api/get/db-connections/${email}`)
 }
+
+async exportCleanedData(connectionId: string): Promise<ApiResponse<{
+  success: boolean
+  connection_id: string
+  database_type: string
+  cleaning_summary: {
+    total_tables: number
+    successfully_cleaned: number
+    original_records: number
+    cleaned_records: number
+    removed_records: number
+    cleaning_efficiency: number
+  }
+  cleaned_tables: Record<string, {
+    data: any[]
+    original_records: number
+    cleaned_records: number
+    removed_records: number
+    cleaning_efficiency: number
+    columns: string[]
+  }>
+  export_timestamp: string
+}>> {
+  return this.request(`/api/analysis/export-cleaned-data?connection_id=${connectionId}`, {
+    method: "POST",
+  })
+}
+
+async exportCleanedTable(connectionId: string, tableName: string): Promise<ApiResponse<{
+  success: boolean
+  table_name: string
+  csv_data: string
+  original_records: number
+  cleaned_records: number
+  removed_records: number
+  cleaning_efficiency: number
+  columns: string[]
+}>> {
+  return this.request(`/api/analysis/export-cleaned-table?connection_id=${connectionId}&table_name=${tableName}`, {
+    method: "POST",
+  })
+}
+
+async exportAnalysisStatistics(connectionId: string): Promise<ApiResponse<{
+  success: boolean
+  connection_id: string
+  csv_data: string
+  overall_statistics: {
+    connection_id: string
+    data_source_type: string
+    database_type: string
+    filename: string
+    total_tables: number
+    analysis_timestamp: string
+    overall_completeness: number
+    overall_uniqueness: number
+    overall_cardinality: number
+    overall_consistency: number
+    overall_volumetry: number
+    overall_quality_score: number
+    overall_risk_level: string
+    overall_risk_percentage: number
+    total_sample_size: number
+    total_records: number
+    total_anomalies: number
+    overall_anomaly_percentage: number
+  }
+  table_statistics: Array<{
+    table_name: string
+    completeness: number
+    uniqueness: number
+    cardinality: number
+    consistency: number
+    volumetry: number
+    overall_quality: number
+    risk_level: string
+    risk_percentage: number
+    sample_size: number
+    total_records: number
+    anomalies_detected: number
+    anomaly_percentage: number
+  }>
+  message: string
+}>> {
+  return this.request(`/api/analysis/export-statistics?connection_id=${connectionId}`, {
+    method: "POST",
+  })
+}
 }
 
 

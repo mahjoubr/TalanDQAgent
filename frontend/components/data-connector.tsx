@@ -101,6 +101,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
   const [storedConnections, setStoredConnections] = useState<StoredConnection[]>([])
   const [hasNotifiedParent, setHasNotifiedParent] = useState(false)
   const [isLoadingStored, setIsLoadingStored] = useState(false)
+  const [activeConnectionType, setActiveConnectionType] = useState<"database" | "file" | null>(null)
   const { toast } = useToast()
 
   // Get user email from localStorage
@@ -171,7 +172,18 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
       return
     }
 
+    // Clear any existing file uploads when connecting to database
+    if (uploadedFile) {
+      setUploadedFile(null)
+    }
+    // Clear any existing connections to ensure only one active connection
+    if (connections.length > 0) {
+      setConnections([])
+      connectionsStorage = []
+    }
+
     setIsConnecting(true)
+    setActiveConnectionType("database")
     setIsLoading?.(true)
     console.log("Connecting to database:", { dbType, host, databaseName, username })
     
@@ -279,8 +291,15 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
     const file = event.target.files?.[0]
     if (!file) return
 
+    // Clear any existing database connections when uploading file
+    if (connections.length > 0) {
+      setConnections([])
+      connectionsStorage = []
+    }
+
     setUploadedFile(file)
     setIsLoading?.(true)
+    setActiveConnectionType("file")
 
     try {
       const response = await apiClient.uploadFile(file)
@@ -383,6 +402,8 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
 
   const clearAllConnections = () => {
     setConnections([])
+    setUploadedFile(null)
+    setActiveConnectionType(null)
     connectionsStorage = []
     setHasNotifiedParent(false) // Reset notification flag
     toast({
@@ -431,15 +452,44 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
         )}
       </div>
 
+      {/* Connection Type Info Banner */}
+      {(activeConnectionType || connections.length > 0) && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <div className="flex items-center gap-2 text-blue-800">
+            <Database className="h-4 w-4" />
+            <span className="text-sm font-medium">
+              {activeConnectionType === "database" 
+                ? "Database connection active - File upload will replace this connection"
+                : activeConnectionType === "file"
+                ? "File connection active - Database connection will replace this connection"
+                : "Single connection mode - Only one connection type can be active at a time"
+              }
+            </span>
+          </div>
+        </div>
+      )}
+
       <Tabs defaultValue="database" className="space-y-6">
         <TabsList className="grid w-full grid-cols-2 bg-blue-50 p-1 rounded-xl">
-          <TabsTrigger value="database" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+          <TabsTrigger 
+            value="database" 
+            className="data-[state=active]:bg-white data-[state=active]:shadow-sm relative"
+          >
             <Database className="mr-2 h-4 w-4" />
             Database Connection
+            {activeConnectionType === "database" && (
+              <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+            )}
           </TabsTrigger>
-          <TabsTrigger value="file" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+          <TabsTrigger 
+            value="file" 
+            className="data-[state=active]:bg-white data-[state=active]:shadow-sm relative"
+          >
             <Upload className="mr-2 h-4 w-4" />
             File Upload
+            {activeConnectionType === "file" && (
+              <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+            )}
           </TabsTrigger>
         </TabsList>
 
@@ -591,7 +641,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
                 </div>
                 File Upload
               </CardTitle>
-              <CardDescription>Upload CSV, XLSX, or other data files for analysis</CardDescription>
+              <CardDescription>Upload CSV or Excel files for analysis</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-2">
@@ -603,28 +653,63 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
                   <Input
                     id="file-upload"
                     type="file"
-                    accept=".csv,.xlsx,.xls,.json"
+                    accept=".csv,.xlsx,.xls"
                     onChange={handleFileUpload}
                     className="hidden"
                   />
                   <Label htmlFor="file-upload" className="cursor-pointer">
                     <div className="text-lg font-medium text-gray-700 mb-2">Drop files here or click to browse</div>
-                    <div className="text-sm text-gray-500">Supports CSV, XLSX, XLS, JSON files up to 100MB</div>
+                    <div className="text-sm text-gray-500">Supports CSV, XLSX, XLS files up to 100MB</div>
                   </Label>
                 </div>
               </div>
 
-              {uploadedFile && (
-                <div className="flex items-center gap-3 p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border border-green-200">
-                  <div className="p-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg">
-                    <CheckCircle className="h-5 w-5 text-white" />
+              {uploadedFile && activeConnectionType === "file" && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border border-green-200">
+                    <div className="p-2 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg">
+                      <CheckCircle className="h-5 w-5 text-white" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-semibold text-green-800">{uploadedFile.name}</p>
+                      <p className="text-sm text-green-600">
+                        {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB • Ready for analysis
+                      </p>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <p className="font-semibold text-green-800">{uploadedFile.name}</p>
-                    <p className="text-sm text-green-600">
-                      {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB • Processing...
-                    </p>
-                  </div>
+                  
+                  {connections.length > 0 && 'fileName' in connections[0] && (
+                    <div className="p-4 bg-gray-50 rounded-lg border">
+                      <h4 className="font-semibold text-gray-700 mb-2">File Details</h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-500">Records:</span>
+                          <span className="ml-2 font-medium">{(connections[0] as FileConnection).recordCount?.toLocaleString() || 'N/A'}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Columns:</span>
+                          <span className="ml-2 font-medium">{(connections[0] as FileConnection).columns?.length || 'N/A'}</span>
+                        </div>
+                      </div>
+                      {(connections[0] as FileConnection).columns && (connections[0] as FileConnection).columns!.length > 0 && (
+                        <div className="mt-3">
+                          <span className="text-gray-500 text-sm">Columns:</span>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {(connections[0] as FileConnection).columns!.slice(0, 6).map((col: string, idx: number) => (
+                              <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">
+                                {col}
+                              </span>
+                            ))}
+                            {(connections[0] as FileConnection).columns!.length > 6 && (
+                              <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded">
+                                +{(connections[0] as FileConnection).columns!.length - 6} more
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
