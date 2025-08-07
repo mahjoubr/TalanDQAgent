@@ -5,10 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ArrowLeft, Home, BarChart3, Database, Activity, Settings, TrendingUp } from "lucide-react"
-import { AnalyticsDashboard } from "@/components/analytics-dashboard"
-import { RealTimeDashboard } from "@/components/real-time-dashboard"
 import { DataConnector } from "@/components/data-connector"
-import { DevelopmentBanner } from "@/components/development-banner"
 
 interface DashboardPageProps {
   connections: any[]
@@ -70,7 +67,7 @@ export function DashboardPage({
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
-      <DevelopmentBanner />
+      
 
       {/* Header */}
       <div className="bg-white border-b border-gray-200 shadow-sm">
@@ -236,17 +233,7 @@ export function DashboardPage({
             </div>
           )}
 
-          {activeTab === "analytics" && (
-            <AnalyticsDashboard connections={connections} analysisResults={analysisResults} />
-          )}
-
-          {activeTab === "realtime" && (
-            <RealTimeDashboard connections={connections} analysisResults={analysisResults} isConnected={false} onToggleConnection={function (connected: boolean): void {
-              throw new Error("Function not implemented.")
-            } } />
-          )}
-
-          {activeTab === "connections" && (
+          {activeTab === "dashboard" && (
             <div className="space-y-6">
               <Card className="border-0 shadow-lg">
                 <CardHeader>

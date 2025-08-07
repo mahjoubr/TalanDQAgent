@@ -3,14 +3,13 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { BarChart3, Database, Activity, TrendingUp, Zap, Shield, Clock, ArrowRight } from "lucide-react"
+import { BarChart3, Database, Activity, Zap, Shield, Clock, ArrowRight } from "lucide-react"
 
 interface WelcomeScreenProps {
   onGetStarted: () => void
-  onViewDashboard: () => void
 }
 
-export function WelcomeScreen({ onGetStarted, onViewDashboard }: WelcomeScreenProps) {
+export function WelcomeScreen({ onGetStarted }: WelcomeScreenProps) {
   const features = [
     {
       icon: Database,
@@ -29,12 +28,6 @@ export function WelcomeScreen({ onGetStarted, onViewDashboard }: WelcomeScreenPr
       title: "AI-Powered Detection",
       description: "VARIMA models for multivariate anomaly detection",
       gradient: "from-pink-500 to-rose-500",
-    },
-    {
-      icon: TrendingUp,
-      title: "Interactive Dashboards",
-      description: "Real-time monitoring with comprehensive visualizations",
-      gradient: "from-green-500 to-emerald-500",
     },
   ]
 
@@ -78,7 +71,7 @@ export function WelcomeScreen({ onGetStarted, onViewDashboard }: WelcomeScreenPr
         </div>
 
         {/* Features Grid */}
-        <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-3">
           {features.map((feature, index) => (
             <Card
               key={index}

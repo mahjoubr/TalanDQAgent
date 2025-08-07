@@ -2,9 +2,8 @@
 
 import { createContext, useContext, useState, type ReactNode } from "react"
 import { Toaster } from "@/components/ui/toaster"
-import { DevelopmentBanner } from "@/components/development-banner"
 
-type ViewType = "welcome" | "auth" | "guided" | "dashboard"
+type ViewType = "welcome" | "auth" | "guided"
 
 interface NavigationContextType {
   currentView: ViewType
@@ -65,7 +64,6 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
   return (
     <NavigationContext.Provider value={contextValue}>
       <div className="min-h-screen">
-        <DevelopmentBanner />
         {children}
         <Toaster />
       </div>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import React, { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -26,6 +26,8 @@ export function ReportGeneration({
   const [isGenerating, setIsGenerating] = useState(false)
   const [isExportingCleanData, setIsExportingCleanData] = useState(false)
   const [isExportingStatistics, setIsExportingStatistics] = useState(false)
+  const [isOpeningPowerBI, setIsOpeningPowerBI] = useState(false)
+  const [powerBIInstalled, setPowerBIInstalled] = useState<boolean | null>(null)
   const { toast } = useToast()
 
   // Debug logging to see what data we're receiving
@@ -366,6 +368,107 @@ export function ReportGeneration({
     }
   }
 
+  // Check Power BI installation on component mount
+  useEffect(() => {
+    const checkPowerBI = async () => {
+      try {
+        const response = await apiClient.checkPowerBIInstallation()
+        if (response.success && response.data) {
+          setPowerBIInstalled(response.data.installed)
+        }
+      } catch (error) {
+        console.error("Error checking Power BI installation:", error)
+        setPowerBIInstalled(false)
+      }
+    }
+    
+    checkPowerBI()
+  }, [])
+
+  const openPowerBIVisualization = async () => {
+    if (!activeConnection) {
+      toast({
+        title: "No Connection",
+        description: "Please establish a connection first.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsOpeningPowerBI(true)
+    try {
+      // Call the Power BI Desktop endpoint which now creates a complete package
+      const openResponse = await apiClient.openPowerBIDesktop(activeConnection.id)
+      
+      if (openResponse.success && openResponse.data) {
+        // Show success message
+        const packageContents = []
+        if (openResponse.data.template_available) {
+          packageContents.push("🎯 Custom Power BI template (.pbit)")
+        }
+        if (openResponse.data.pbix_available) {
+          packageContents.push("📈 Pre-built dashboard (.pbix)")
+        }
+        packageContents.push("📊 Analysis data (CSV)")
+        packageContents.push("📖 Setup instructions")
+        
+        toast({
+          title: "Power BI Package Ready!",
+          description: `Package includes: ${packageContents.join(", ")}. Download will start automatically.`,
+        })
+        
+        // Trigger download
+        if (openResponse.data.download_url) {
+          const downloadUrl = `${apiClient.apiBaseUrl}${openResponse.data.download_url}`
+          
+          // Create a temporary link to trigger download
+          const link = document.createElement('a')
+          link.href = downloadUrl
+          link.download = `PowerBI_DataQuality_Package_${activeConnection.id}.zip`
+          document.body.appendChild(link)
+          link.click()
+          document.body.removeChild(link)
+          
+          // Show additional instructions after a delay
+          setTimeout(() => {
+            const workflowMessage = openResponse.data?.template_available 
+              ? "📁 Extract the ZIP → Open .pbit template → Connect to CSV data → Dashboard ready!"
+              : "📁 Extract the ZIP → Import CSV to Power BI → Create visualizations"
+              
+            toast({
+              title: "Next Steps",
+              description: workflowMessage,
+            })
+          }, 2000)
+        }
+        
+        // Show data summary
+        if (openResponse.data.data_summary) {
+          const summary = openResponse.data.data_summary
+          setTimeout(() => {
+            toast({
+              title: "Data Summary",
+              description: `${summary.total_tables} tables • ${summary.overall_score.toFixed(1)}% quality • ${summary.anomalies} anomalies • ${summary.risk_level} risk`,
+            })
+          }, 4000)
+        }
+        
+      } else {
+        throw new Error("Failed to create Power BI package")
+      }
+    } catch (error) {
+      console.error("Power BI visualization error:", error)
+      
+      toast({
+        title: "Package Creation Failed",
+        description: "Unable to create Power BI package. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsOpeningPowerBI(false)
+    }
+  }
+
   const hasData = qualityMetrics || varimaResults
   const tablesCount = qualityMetrics?.analyzed_tables?.length || 0
   const anomaliesCount = varimaResults?.total_anomalies || 0
@@ -627,6 +730,74 @@ export function ReportGeneration({
                 </>
               )}
             </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="border-0 shadow-lg">
+          <div className="h-2 bg-gradient-to-r from-orange-500 to-red-500 rounded-t-lg"></div>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-3 text-xl">
+              <div className="p-2 bg-gradient-to-r from-orange-500 to-red-500 rounded-lg">
+                <BarChart3 className="h-5 w-5 text-white" />
+              </div>
+              Power BI Package Download
+            </CardTitle>
+            <CardDescription>
+              Download a complete package with your analysis data, custom template, and setup instructions for Power BI visualization
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <h4 className="font-semibold text-gray-700">Power BI Features:</h4>
+              <div className="space-y-1 text-sm text-gray-600">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-orange-500" />
+                  <span>Interactive dashboards & charts</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-purple-500" />
+                  <span>Advanced data analysis tools</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Database className="h-4 w-4 text-blue-500" />
+                  <span>Professional reporting capabilities</span>
+                </div>
+              </div>
+              {powerBIInstalled === false && (
+                <div className="p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                  <p className="text-sm text-orange-800">
+                    <strong>Power BI Desktop not detected.</strong> Download it from Microsoft to use this feature.
+                  </p>
+                </div>
+              )}
+            </div>
+            <Button
+              onClick={openPowerBIVisualization}
+              disabled={isOpeningPowerBI || !activeConnection || powerBIInstalled === false}
+              className="w-full bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white"
+            >
+              {isOpeningPowerBI ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating Package...
+                </>
+              ) : (
+                <>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download Power BI Package
+                </>
+              )}
+            </Button>
+            {powerBIInstalled === false && (
+              <Button
+                onClick={() => window.open('https://powerbi.microsoft.com/desktop/', '_blank')}
+                variant="outline"
+                className="w-full border-orange-300 text-orange-600 hover:bg-orange-50"
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download Power BI Desktop
+              </Button>
+            )}
           </CardContent>
         </Card>
       </div>

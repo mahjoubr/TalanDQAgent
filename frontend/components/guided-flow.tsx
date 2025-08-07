@@ -24,14 +24,13 @@ import { useToast } from "@/hooks/use-toast"
 
 interface GuidedFlowProps {
   onBack?: () => void
-  onNavigateTo?: (view: "welcome" | "auth" | "guided" | "dashboard") => void
+  onNavigateTo?: (view: "welcome" | "auth" | "guided") => void
   canGoBack?: boolean
   userData?: any
   onComplete?: () => void
-  onViewDashboard?: () => void
 }
 
-export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComplete, onViewDashboard }: GuidedFlowProps) {
+export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComplete }: GuidedFlowProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [completedSteps, setCompletedSteps] = useState<number[]>([])
   const [stepData, setStepData] = useState<any>({})
@@ -145,10 +144,19 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   const handleNext = useCallback(() => {
     if (currentStep < steps.length - 1) {
       setCurrentStep(currentStep + 1)
-    } else if (onComplete) {
-      onComplete()
+    } else {
+      // Workflow complete - show completion message and navigate home
+      toast({
+        title: "Setup Complete!",
+        description: "Your Power BI analytics workflow has been successfully configured. Reports are ready for download.",
+      })
+      if (onComplete) {
+        onComplete()
+      } else if (onNavigateTo) {
+        onNavigateTo("welcome")
+      }
     }
-  }, [currentStep, steps.length, onComplete])
+  }, [currentStep, steps.length, onComplete, onNavigateTo, toast])
 
   const handlePrevious = useCallback(() => {
     if (currentStep > 0) {
@@ -283,18 +291,6 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
                 <Badge variant="outline" className="border-green-300 text-green-700">
                   {connections.length} Connection{connections.length > 1 ? 's' : ''} Active
                 </Badge>
-              )}
-
-              {onNavigateTo && (
-                <Button
-                  onClick={() => onNavigateTo("dashboard")}
-                  variant="outline"
-                  size="sm"
-                  className="border-blue-300 text-blue-600 hover:bg-blue-50"
-                >
-                  <BarChart3 className="mr-2 h-4 w-4" />
-                  View Dashboard
-                </Button>
               )}
             </div>
           </div>

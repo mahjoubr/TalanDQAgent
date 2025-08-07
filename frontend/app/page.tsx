@@ -4,7 +4,6 @@ import { NavigationProvider, useNavigation } from "@/components/navigation-provi
 import { WelcomeScreen } from "@/components/welcome-screen"
 import { AuthPage } from "@/components/auth-page"
 import { GuidedFlow } from "@/components/guided-flow"
-import { DashboardPage } from "@/components/dashboard-page"
 import { ThemeProvider } from "@/components/theme-provider"
 
 function AppContent() {
@@ -16,12 +15,13 @@ function AppContent() {
   }
 
   const handleGuidedComplete = () => {
-    navigateTo("dashboard")
+    // Return to welcome screen after guided setup completion
+    navigateTo("welcome")
   }
 
   switch (currentView) {
     case "welcome":
-      return <WelcomeScreen onGetStarted={() => navigateTo("auth")} onViewDashboard={() => navigateTo("dashboard")} />
+      return <WelcomeScreen onGetStarted={() => navigateTo("auth")} />
 
     case "auth":
       return <AuthPage onBack={goBack} onAuthSuccess={handleAuthSuccess} />
@@ -31,19 +31,12 @@ function AppContent() {
         <GuidedFlow
           onBack={goBack}
           onComplete={handleGuidedComplete}
-          onViewDashboard={() => navigateTo("dashboard")}
           userData={userData}
         />
       )
 
-    case "dashboard":
-      return <DashboardPage onBack={goBack}
-      userData={userData} connections={[]} analysisResults={undefined} onDataConnected={function (data: any): void {
-        throw new Error("Function not implemented.")
-      } } />
-
     default:
-      return <WelcomeScreen onGetStarted={() => navigateTo("auth")} onViewDashboard={() => navigateTo("dashboard")} />
+      return <WelcomeScreen onGetStarted={() => navigateTo("auth")} />
   }
 }
 

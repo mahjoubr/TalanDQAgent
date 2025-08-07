@@ -125,6 +125,10 @@ class ApiClient {
     this.baseUrl = baseUrl
   }
 
+  public get apiBaseUrl(): string {
+    return this.baseUrl
+  }
+
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     try {
       //  Use of HeadersInit type which is more flexible
@@ -600,6 +604,67 @@ async exportAnalysisStatistics(connectionId: string): Promise<ApiResponse<{
   message: string
 }>> {
   return this.request(`/api/analysis/export-statistics?connection_id=${connectionId}`, {
+    method: "POST",
+  })
+}
+
+async checkPowerBIInstallation(): Promise<ApiResponse<{
+  installed: boolean
+  paths: string[]
+  primary_path: string | null
+  message: string
+  download_url?: string
+  instructions?: string[]
+}>> {
+  return this.request("/api/powerbi/check-installation")
+}
+
+async openPowerBIDesktop(connectionId: string): Promise<ApiResponse<{
+  success: boolean
+  message: string
+  download_url?: string
+  package_path?: string
+  csv_path: string
+  template_path?: string | null
+  pbix_path?: string | null
+  instructions_path?: string
+  temp_directory: string
+  powerbi_url?: string
+  template_available: boolean
+  pbix_available: boolean
+  package_contents?: {
+    csv_data: string
+    template?: string | null
+    dashboard?: string | null
+    setup_guide: string
+  }
+  quick_actions?: string[]
+  recommended_workflow?: string
+  data_summary?: {
+    total_tables: number
+    overall_score: number
+    risk_level: string
+    anomalies: number
+  }
+}>> {
+  return this.request(`/api/powerbi/open-desktop?connection_id=${connectionId}`, {
+    method: "POST",
+  })
+}
+
+async createPowerBITemplate(connectionId: string): Promise<ApiResponse<{
+  success: boolean
+  message: string
+  template_directory: string
+  files: {
+    csv_data: string
+    config: string
+    instructions: string
+  }
+  template_config: any
+  next_steps: string[]
+}>> {
+  return this.request(`/api/powerbi/create-template?connection_id=${connectionId}`, {
     method: "POST",
   })
 }
