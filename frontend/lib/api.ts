@@ -199,7 +199,7 @@ class ApiClient {
   async storeConnectionString(email: string, connectionString: string): Promise<ApiResponse<DbStore>> {
     return this.request<DbStore>("/api/store/db-connection", {
       method: "POST",
-      body: JSON.stringify({ email, connectionString }),
+      body: JSON.stringify({ email, connection_string: connectionString }),
     })
   }
 
@@ -386,8 +386,11 @@ class ApiClient {
   }
 
   async runAutoVarimaAllTables(connectionId: string): Promise<ApiResponse<any>> {
-    return this.request(`/api/analysis/auto-varima-all-tables?connection_id=${connectionId}`, {
+    return this.request("/api/analysis/auto-varima-all-tables", {
       method: "POST",
+      body: JSON.stringify({
+        connection_id: connectionId
+      }),
     })
   }
 
@@ -508,32 +511,25 @@ async deleteConnectionString(email: string, connectionId: string): Promise<ApiRe
 }
 
 async getStoredConnections(email: string): Promise<ApiResponse<{
-  email: string
-  connections: Array<{
-    connection_id: string
-    created_at: string
-    connection_preview: string
-  }>
-  total_connections: number
-  last_updated: string
+  data: {
+    email: string
+    connections: Array<{
+      connection_id: string
+      created_at: string
+      connection_preview: string
+    }>
+    total_connections: number
+    last_updated: string
+  }
 }>> {
   return this.request(`/api/get/db-connections/${email}`)
 }
 
 async exportCleanedData(connectionId: string): Promise<ApiResponse<{
   success: boolean
-  connection_id: string
-  database_type: string
-  cleaning_summary: {
-    total_tables: number
-    successfully_cleaned: number
-    original_records: number
-    cleaned_records: number
-    removed_records: number
-    cleaning_efficiency: number
-  }
-  cleaned_tables: Record<string, {
-    data: any[]
+  files: Array<{
+    table_name: string
+    csv_data: string
     original_records: number
     cleaned_records: number
     removed_records: number
@@ -542,8 +538,12 @@ async exportCleanedData(connectionId: string): Promise<ApiResponse<{
   }>
   export_timestamp: string
 }>> {
-  return this.request(`/api/analysis/export-cleaned-data?connection_id=${connectionId}`, {
+  return this.request(`/api/analysis/export-cleaned-data`, {
     method: "POST",
+    body: JSON.stringify({ connection_id: connectionId }),
+    headers: {
+      'Content-Type': 'application/json'
+    }
   })
 }
 
@@ -557,54 +557,34 @@ async exportCleanedTable(connectionId: string, tableName: string): Promise<ApiRe
   cleaning_efficiency: number
   columns: string[]
 }>> {
-  return this.request(`/api/analysis/export-cleaned-table?connection_id=${connectionId}&table_name=${tableName}`, {
+  return this.request(`/api/analysis/export-cleaned-table`, {
     method: "POST",
+    body: JSON.stringify({ connection_id: connectionId, table_name: tableName }),
+    headers: {
+      'Content-Type': 'application/json'
+    }
   })
 }
 
 async exportAnalysisStatistics(connectionId: string): Promise<ApiResponse<{
   success: boolean
-  connection_id: string
   csv_data: string
-  overall_statistics: {
-    connection_id: string
-    data_source_type: string
-    database_type: string
-    filename: string
+  summary: {
     total_tables: number
-    analysis_timestamp: string
-    overall_completeness: number
-    overall_uniqueness: number
-    overall_cardinality: number
-    overall_consistency: number
-    overall_volumetry: number
+    analyzed_tables: number
     overall_quality_score: number
-    overall_risk_level: string
-    overall_risk_percentage: number
-    total_sample_size: number
-    total_records: number
-    total_anomalies: number
-    overall_anomaly_percentage: number
-  }
-  table_statistics: Array<{
-    table_name: string
-    completeness: number
-    uniqueness: number
-    cardinality: number
-    consistency: number
-    volumetry: number
-    overall_quality: number
-    risk_level: string
-    risk_percentage: number
-    sample_size: number
     total_records: number
     anomalies_detected: number
     anomaly_percentage: number
-  }>
+  }
   message: string
 }>> {
-  return this.request(`/api/analysis/export-statistics?connection_id=${connectionId}`, {
+  return this.request(`/api/analysis/export-statistics`, {
     method: "POST",
+    body: JSON.stringify({ connection_id: connectionId }),
+    headers: {
+      'Content-Type': 'application/json'
+    }
   })
 }
 
@@ -647,8 +627,12 @@ async openPowerBIDesktop(connectionId: string): Promise<ApiResponse<{
     anomalies: number
   }
 }>> {
-  return this.request(`/api/powerbi/open-desktop?connection_id=${connectionId}`, {
+  return this.request(`/api/powerbi/open-online`, {
     method: "POST",
+    body: JSON.stringify({ connection_id: connectionId }),
+    headers: {
+      'Content-Type': 'application/json'
+    }
   })
 }
 

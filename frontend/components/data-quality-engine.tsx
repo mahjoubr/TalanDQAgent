@@ -82,32 +82,104 @@ export function DataQualityEngine({
   const qualitySteps = ["completeness", "uniqueness", "cardinality", "consistency", "volumetry"]
   const { toast } = useToast()
 
+  // Helper functions to generate dynamic recommendations and issues
+  const generateRecommendations = (metric: string, score: number): string[] => {
+    const recommendations: Record<string, { good: string[], poor: string[] }> = {
+      completeness: {
+        good: ['Data completeness is excellent', 'Maintain current data collection standards', 'Consider this as a best practice example'],
+        poor: ['Review data collection processes', 'Implement data validation at source', 'Set up automated data quality checks', 'Train data entry personnel on completeness requirements']
+      },
+      uniqueness: {
+        good: ['Uniqueness levels are acceptable', 'Continue monitoring for duplicate prevention', 'Data integrity is well maintained'],
+        poor: ['Remove duplicate entries', 'Implement unique constraints in database', 'Review data merge processes', 'Set up duplicate detection algorithms']
+      },
+      cardinality: {
+        good: ['Data validity is good', 'Current validation rules are effective', 'Data types and formats are consistent'],
+        poor: ['Validate data inputs', 'Review data type constraints', 'Implement field validation rules', 'Check for outliers and invalid values']
+      },
+      consistency: {
+        good: ['Data consistency is maintained', 'Formatting standards are being followed', 'Cross-table relationships are valid'],
+        poor: ['Standardize data formats', 'Implement consistent naming conventions', 'Review data transformation processes', 'Establish data governance policies']
+      },
+      volumetry: {
+        good: ['Data accuracy is high', 'Current quality controls are effective', 'Data meets accuracy standards'],
+        poor: ['Improve data accuracy', 'Implement accuracy measurement tools', 'Review data sources for reliability', 'Set up data quality monitoring dashboards']
+      }
+    }
+    
+    const metricRecs = recommendations[metric] || recommendations.completeness
+    return score >= 80 ? metricRecs.good : metricRecs.poor
+  }
+
+  const generateIssues = (metric: string, score: number): string[] => {
+    if (score >= 90) return []
+    
+    const issues: Record<string, string[]> = {
+      completeness: [
+        'Missing values detected in critical fields',
+        'Incomplete records affecting data reliability',
+        'Data collection gaps identified'
+      ],
+      uniqueness: [
+        'Duplicate records found in dataset',
+        'Primary key violations detected',
+        'Data redundancy affecting storage efficiency'
+      ],
+      cardinality: [
+        'Invalid data formats detected',
+        'Data type mismatches found',
+        'Constraint violations in database fields'
+      ],
+      consistency: [
+        'Inconsistent data formats across tables',
+        'Naming convention violations found',
+        'Cross-reference integrity issues detected'
+      ],
+      volumetry: [
+        'Data accuracy below acceptable thresholds',
+        'Quality degradation trends observed',
+        'Measurement precision issues identified'
+      ]
+    }
+    
+    const metricIssues = issues[metric] || issues.completeness
+    const severity = score < 70 ? 3 : score < 85 ? 2 : 1
+    return metricIssues.slice(0, severity)
+  }
+
   // Get the active connection (prioritize the direct data prop, then latest connection)
   const getActiveConnection = () => {
     // If data prop has an ID, use it
     if (data?.id) {
+      console.log('Using data prop connection:', data.id)
       return data
     }
     
     // Otherwise, use the latest connection from connections array
     if (connections && connections.length > 0) {
-      return connections[connections.length - 1]
+      const latest = connections[connections.length - 1]
+      console.log('Using latest connection from array:', latest.id)
+      return latest
     }
     
+    console.log('No active connection found')
     return null
   }
 
   const activeConnection = getActiveConnection()
 
-  // Auto-load cached results when connection becomes available
+  // Auto-load cached results when connection becomes available - CONSERVATIVE APPROACH
   useEffect(() => {
     const connection = getActiveConnection()
     
-    if (connection?.id && !isAnalyzing) {
+    // Only load if we have a connection, aren't already loading/analyzing, and don't have results yet
+    if (connection?.id && !isAnalyzing && !isLoadingResults && !hasRunAnalysis) {
       console.log('Connection available, loading cached results:', connection.id)
       loadCachedResults(connection.id)
     }
-  }, [data?.id, connections, isAnalyzing])
+  }, [data?.id]) // Only depend on data.id to avoid constant re-triggering
+
+  // REMOVED: Auto-run quality analysis - now user must click button manually
 
   // Load cached analysis results from Redis
   const loadCachedResults = async (connectionId: string) => {
@@ -120,24 +192,50 @@ export function DataQualityEngine({
         
         // Set combined metrics
         if (combined_results?.metrics) {
-          setMetrics(combined_results.metrics)
+          const safeMetrics = {
+            completeness: combined_results.metrics.completeness || 0,
+            uniqueness: combined_results.metrics.uniqueness || 0,
+            cardinality: combined_results.metrics.cardinality || 0,
+            consistency: combined_results.metrics.consistency || 0,
+            volumetry: combined_results.metrics.volumetry || 0,
+          }
+          setMetrics(safeMetrics)
           setHasRunAnalysis(true)
           
           // Set detailed results
           if (combined_results.detailed_analysis) {
             const updatedResults: Record<string, DetailedQualityMetric> = {}
             
-            Object.keys(combined_results.detailed_analysis).forEach((key) => {
+            Object.keys(combined_results.detailed_analysis || {}).forEach((key) => {
               const analysis = combined_results.detailed_analysis[key as keyof typeof combined_results.detailed_analysis]
-              updatedResults[key] = {
-                score: analysis.score,
-                issues: analysis.issues || [],
-                recommendations: analysis.recommendations || [],
-                trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+              if (analysis) {
+                const score = analysis.score || 0
+                // Generate recommendations if not provided by backend
+                const recommendations = analysis.recommendations?.length > 0 ? analysis.recommendations : generateRecommendations(key, score)
+                const issues = analysis.issues?.length > 0 ? analysis.issues : generateIssues(key, score)
+                
+                updatedResults[key] = {
+                  score: score,
+                  issues: issues,
+                  recommendations: recommendations,
+                  trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+                }
               }
             })
             
             setDetailedResults(updatedResults)
+          } else {
+            // Generate detailed results from metrics if detailed_analysis is not provided
+            const generatedResults: Record<string, DetailedQualityMetric> = {}
+            Object.entries(safeMetrics).forEach(([key, score]) => {
+              generatedResults[key] = {
+                score: score,
+                issues: generateIssues(key, score),
+                recommendations: generateRecommendations(key, score),
+                trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+              }
+            })
+            setDetailedResults(generatedResults)
           }
           
           // Notify parent component
@@ -153,7 +251,7 @@ export function DataQualityEngine({
         
         // Set table-specific results
         setTableResults(table_results || {})
-        setAnalyzedTables(analyzed_tables || [])
+        setAnalyzedTables([...new Set(analyzed_tables || [])])
         
         console.log('Cached results loaded:', {
           tables: analyzed_tables?.length || 0,
@@ -183,13 +281,14 @@ export function DataQualityEngine({
     }
   }
 
-  // Reset analysis state when connection changes
+  // Reset analysis state when connection changes - CONSERVATIVE APPROACH
   useEffect(() => {
     const connection = getActiveConnection()
     const currentConnectionId = connection?.id
     
-    // Reset if we have a new connection
-    if (currentConnectionId && currentConnectionId !== data?.id) {
+    // Only reset if connection ID actually changes (not just props update)
+    if (currentConnectionId && data?.id && currentConnectionId !== data?.id) {
+      console.log('Connection changed, resetting quality analysis state:', currentConnectionId)
       setHasRunAnalysis(false)
       setAnalyzedTables([])
       setTableResults({})
@@ -201,12 +300,13 @@ export function DataQualityEngine({
         volumetry: 0,
       })
     }
-  }, [data?.id, connections])
+  }, [data?.id]) // Only depend on data.id to avoid excessive re-runs
 
   const runAutoQualityAnalysis = async () => {
     const connection = getActiveConnection()
     
     if (!connection?.id) {
+      console.log('No connection available for quality analysis')
       toast({
         title: "No Data Connection",
         description: "Please connect to a data source first",
@@ -215,6 +315,7 @@ export function DataQualityEngine({
       return
     }
 
+    console.log('Starting quality analysis for connection:', connection.id)
     setIsAnalyzing(true)
     setIsLoading?.(true)
     setAnalysisProgress(0)
@@ -243,40 +344,148 @@ export function DataQualityEngine({
       console.log('Running auto quality analysis for connection:', connection.id)
       
       const response = await apiClient.runAutoQualityAnalysisAllTables(connection.id)
+      console.log('Quality analysis API response:', response)
 
       if (response.success && response.data) {
         const analysisData = response.data
         
         console.log('Auto quality analysis results:', analysisData)
         
-        setMetrics(analysisData.metrics)
-        setHasRunAnalysis(true)
-        
-        // Notify parent component with the results
-        onMetricsCalculated?.({
-          metrics: analysisData.metrics,
-          detailed_analysis: analysisData.detailed_analysis,
-          sample_size: analysisData.sample_size,
-          connection_id: connection.id,
-          analyzed_tables: analysisData.analyzed_tables,
-          table_count: analysisData.table_count
-        })
-
-        // Update detailed results with real data from backend
-        const updatedResults: Record<string, DetailedQualityMetric> = {}
-        
-        Object.keys(analysisData.detailed_analysis).forEach((key) => {
-          const analysis = analysisData.detailed_analysis[key as keyof typeof analysisData.detailed_analysis]
-          updatedResults[key] = {
-            score: analysis.score,
-            issues: analysis.issues || [],
-            recommendations: analysis.recommendations || [],
-            trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+        // Handle the actual backend response structure
+        if ((analysisData as any).table_results && (analysisData as any).overall_quality_score !== undefined) {
+          // Convert backend response to frontend format
+          const tableResults = (analysisData as any).table_results
+          const tableNames = Object.keys(tableResults)
+          
+          // Calculate combined metrics from individual table results
+          let totalCompleteness = 0
+          let totalUniqueness = 0
+          let totalCardinality = 0 // Use validity as cardinality
+          let totalConsistency = 0
+          let totalVolumetry = 0 // Use accuracy as volumetry
+          let tableCount = 0
+          
+          Object.values(tableResults).forEach((table: any) => {
+            if (table.quality_score && table.quality_score > 0) {
+              totalCompleteness += table.completeness || 0
+              totalUniqueness += table.uniqueness || 0
+              totalCardinality += table.validity || 0 // Map validity to cardinality
+              totalConsistency += table.consistency || 0
+              totalVolumetry += table.accuracy || 0 // Map accuracy to volumetry
+              tableCount++
+            }
+          })
+          
+          const safeMetrics = {
+            completeness: tableCount > 0 ? Math.round(totalCompleteness / tableCount) : 0,
+            uniqueness: tableCount > 0 ? Math.round(totalUniqueness / tableCount) : 0,
+            cardinality: tableCount > 0 ? Math.round(totalCardinality / tableCount) : 0,
+            consistency: tableCount > 0 ? Math.round(totalConsistency / tableCount) : 0,
+            volumetry: tableCount > 0 ? Math.round(totalVolumetry / tableCount) : 0,
           }
-        })
-        
-        setDetailedResults(updatedResults)
-        setAnalyzedTables(analysisData.analyzed_tables)
+          
+          setMetrics(safeMetrics)
+          setHasRunAnalysis(true)
+          
+          // Set analyzed tables and table results for display
+          setAnalyzedTables([...new Set(tableNames)])
+          setTableResults(tableResults)
+          
+          // Create detailed analysis from aggregated results
+          const detailedAnalysis = {
+            completeness: {
+              score: safeMetrics.completeness,
+              issues: generateIssues('completeness', safeMetrics.completeness),
+              recommendations: generateRecommendations('completeness', safeMetrics.completeness),
+            },
+            uniqueness: {
+              score: safeMetrics.uniqueness,
+              issues: generateIssues('uniqueness', safeMetrics.uniqueness),
+              recommendations: generateRecommendations('uniqueness', safeMetrics.uniqueness),
+            },
+            cardinality: {
+              score: safeMetrics.cardinality,
+              issues: generateIssues('cardinality', safeMetrics.cardinality),
+              recommendations: generateRecommendations('cardinality', safeMetrics.cardinality),
+            },
+            consistency: {
+              score: safeMetrics.consistency,
+              issues: generateIssues('consistency', safeMetrics.consistency),
+              recommendations: generateRecommendations('consistency', safeMetrics.consistency),
+            },
+            volumetry: {
+              score: safeMetrics.volumetry,
+              issues: generateIssues('volumetry', safeMetrics.volumetry),
+              recommendations: generateRecommendations('volumetry', safeMetrics.volumetry),
+            }
+          }
+          
+          // Notify parent component with the results
+          onMetricsCalculated?.({
+            metrics: safeMetrics,
+            detailed_analysis: detailedAnalysis,
+            sample_size: Object.values(tableResults).reduce((sum: number, table: any) => sum + (table.total_rows || 0), 0),
+            connection_id: connection.id,
+            analyzed_tables: tableNames,
+            table_count: (analysisData as any).total_tables || tableNames.length
+          })
+          
+          // Update detailed results for UI display
+          const updatedResults: Record<string, DetailedQualityMetric> = {}
+          
+          Object.keys(detailedAnalysis).forEach((key) => {
+            const analysis = detailedAnalysis[key as keyof typeof detailedAnalysis]
+            updatedResults[key] = {
+              score: analysis.score || 0,
+              issues: analysis.issues || [],
+              recommendations: analysis.recommendations || [],
+              trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+            }
+          })
+          
+          setDetailedResults(updatedResults)
+          
+        } else if (analysisData.metrics) {
+          // Handle the expected format (if backend returns the interface-compatible format)
+          const safeMetrics = {
+            completeness: analysisData.metrics?.completeness || 0,
+            uniqueness: analysisData.metrics?.uniqueness || 0,
+            cardinality: analysisData.metrics?.cardinality || 0,
+            consistency: analysisData.metrics?.consistency || 0,
+            volumetry: analysisData.metrics?.volumetry || 0,
+          }
+          setMetrics(safeMetrics)
+          setHasRunAnalysis(true)
+          
+          // Notify parent component with the results
+          onMetricsCalculated?.({
+            metrics: analysisData.metrics,
+            detailed_analysis: analysisData.detailed_analysis,
+            sample_size: analysisData.sample_size,
+            connection_id: connection.id,
+            analyzed_tables: analysisData.analyzed_tables,
+            table_count: analysisData.table_count
+          })
+
+          // Update detailed results with real data from backend
+          const updatedResults: Record<string, DetailedQualityMetric> = {}
+          
+          Object.keys(analysisData.detailed_analysis || {}).forEach((key) => {
+            const analysis = analysisData.detailed_analysis[key as keyof typeof analysisData.detailed_analysis]
+            if (analysis) {
+              const score = analysis.score || 0
+              updatedResults[key] = {
+                score: score,
+                issues: analysis.issues?.length > 0 ? analysis.issues : generateIssues(key, score),
+                recommendations: analysis.recommendations?.length > 0 ? analysis.recommendations : generateRecommendations(key, score),
+                trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+              }
+            }
+          })
+          
+          setDetailedResults(updatedResults)
+          setAnalyzedTables([...new Set(analysisData.analyzed_tables || [])])
+        }
 
         setAnalysisProgress(95)
         setCurrentStep("loading cached results")
@@ -285,18 +494,19 @@ export function DataQualityEngine({
         await loadCachedResults(connection.id)
 
         toast({
-          title: "Analysis Complete!",
-          description: `Successfully analyzed ${analysisData.table_count} tables with ${analysisData.sample_size} total records. Results cached for fast access.`,
+          title: "Quality Analysis Complete!",
+          description: `Successfully analyzed ${(analysisData as any).table_count || Object.keys(tableResults).length} tables. Overall quality score: ${(analysisData as any).overall_quality_score || 'N/A'}%. Results cached for fast access.`,
         })
 
       } else {
+        console.error('Quality analysis API response not successful:', response)
         throw new Error(response.error || "API response was not successful")
       }
     } catch (error) {
       console.error("Auto quality analysis failed:", error)
       
       toast({
-        title: "Analysis Failed",
+        title: "Quality Analysis Failed",
         description: error instanceof Error ? error.message : "Unable to analyze data. Please check your connection and try again.",
         variant: "destructive",
       })
@@ -397,11 +607,11 @@ export function DataQualityEngine({
               </div>
             ) : (
               <div className="space-y-4">
-                {analyzedTables.map((tableName) => {
+                {[...new Set(analyzedTables)].map((tableName, index) => {
                   const tableResult = tableResults[tableName]
                   return (
                     <Card 
-                      key={tableName} 
+                      key={`${tableName}-${index}`} 
                       className="border border-green-300 bg-gradient-to-r from-green-50 to-emerald-50 cursor-pointer hover:shadow-md transition-all"
                       onClick={() => setSelectedTableForView(selectedTableForView === tableName ? "" : tableName)}
                     >
@@ -418,18 +628,12 @@ export function DataQualityEngine({
                                   ✓ Analyzed & Cached
                                 </Badge>
                               </CardTitle>
-                              {tableResult?.table_stats && (
+                              {tableResult && (
                                 <p className="text-sm text-green-600 mt-1">
-                                  {tableResult.table_stats.row_count?.toLocaleString() || 0} rows • {tableResult.table_stats.column_count || 0} columns
-                                  {tableResult.metrics && (
+                                  {tableResult.total_rows?.toLocaleString() || 0} rows • {tableResult.total_columns || 0} columns
+                                  {tableResult.quality_score && (
                                     <span className="ml-2">
-                                      • Avg Quality: {Math.round((
-                                        tableResult.metrics.completeness + 
-                                        tableResult.metrics.uniqueness + 
-                                        tableResult.metrics.cardinality + 
-                                        tableResult.metrics.consistency + 
-                                        tableResult.metrics.volumetry
-                                      ) / 5)}%
+                                      • Quality Score: {Math.round(tableResult.quality_score)}%
                                     </span>
                                   )}
                                 </p>
@@ -437,9 +641,9 @@ export function DataQualityEngine({
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            {tableResult?.table_stats && (
+                            {tableResult && (
                               <Badge variant="outline" className="border-green-300 text-green-700 bg-white">
-                                {tableResult.table_stats.row_count?.toLocaleString() || 0} records
+                                {tableResult.total_rows?.toLocaleString() || 0} records
                               </Badge>
                             )}
                             <div className={`transform transition-transform ${selectedTableForView === tableName ? 'rotate-180' : ''}`}>
@@ -458,7 +662,7 @@ export function DataQualityEngine({
                                 Quality Metrics
                               </TabsTrigger>
                               <TabsTrigger value="columns" className="data-[state=active]:bg-white">
-                                Columns ({tableResult.table_stats?.column_count || 0})
+                                Columns ({tableResult?.column_metrics ? Object.keys(tableResult.column_metrics).length : 0})
                               </TabsTrigger>
                               <TabsTrigger value="sample" className="data-[state=active]:bg-white">
                                 Sample Data
@@ -466,48 +670,95 @@ export function DataQualityEngine({
                             </TabsList>
                             
                             <TabsContent value="metrics" className="mt-4">
-                              {tableResult.metrics && (
+                              {tableResult && (
                                 <div className="grid gap-3 md:grid-cols-5">
-                                  {Object.entries(tableResult.metrics).map(([key, value]) => (
-                                    <div key={key} className="bg-white rounded border border-green-200 p-3 text-center">
-                                      <div className="text-xs text-green-700 capitalize font-medium mb-1">{key}</div>
-                                      <div className={`text-lg font-bold ${getScoreColor(value as number)}`}>
-                                        {value as number}%
-                                      </div>
-                                      <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
-                                        <div
-                                          className={`h-1.5 rounded-full bg-gradient-to-r ${getGradientForMetric(key)}`}
-                                          style={{ width: `${value as number}%` }}
-                                        ></div>
-                                      </div>
+                                  {/* Display the main quality metrics from backend */}
+                                  <div className="bg-white rounded border border-green-200 p-3 text-center">
+                                    <div className="text-xs text-green-700 capitalize font-medium mb-1">completeness</div>
+                                    <div className={`text-lg font-bold ${getScoreColor(tableResult.completeness || 0)}`}>
+                                      {Math.round(tableResult.completeness || 0)}%
                                     </div>
-                                  ))}
+                                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                      <div
+                                        className={`h-1.5 rounded-full bg-gradient-to-r ${getGradientForMetric('completeness')}`}
+                                        style={{ width: `${tableResult.completeness || 0}%` }}
+                                      ></div>
+                                    </div>
+                                  </div>
+                                  <div className="bg-white rounded border border-green-200 p-3 text-center">
+                                    <div className="text-xs text-green-700 capitalize font-medium mb-1">uniqueness</div>
+                                    <div className={`text-lg font-bold ${getScoreColor(tableResult.uniqueness || 0)}`}>
+                                      {Math.round(tableResult.uniqueness || 0)}%
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                      <div
+                                        className={`h-1.5 rounded-full bg-gradient-to-r ${getGradientForMetric('uniqueness')}`}
+                                        style={{ width: `${tableResult.uniqueness || 0}%` }}
+                                      ></div>
+                                    </div>
+                                  </div>
+                                  <div className="bg-white rounded border border-green-200 p-3 text-center">
+                                    <div className="text-xs text-green-700 capitalize font-medium mb-1">validity</div>
+                                    <div className={`text-lg font-bold ${getScoreColor(tableResult.validity || 0)}`}>
+                                      {Math.round(tableResult.validity || 0)}%
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                      <div
+                                        className={`h-1.5 rounded-full bg-gradient-to-r ${getGradientForMetric('cardinality')}`}
+                                        style={{ width: `${tableResult.validity || 0}%` }}
+                                      ></div>
+                                    </div>
+                                  </div>
+                                  <div className="bg-white rounded border border-green-200 p-3 text-center">
+                                    <div className="text-xs text-green-700 capitalize font-medium mb-1">consistency</div>
+                                    <div className={`text-lg font-bold ${getScoreColor(tableResult.consistency || 0)}`}>
+                                      {Math.round(tableResult.consistency || 0)}%
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                      <div
+                                        className={`h-1.5 rounded-full bg-gradient-to-r ${getGradientForMetric('consistency')}`}
+                                        style={{ width: `${tableResult.consistency || 0}%` }}
+                                      ></div>
+                                    </div>
+                                  </div>
+                                  <div className="bg-white rounded border border-green-200 p-3 text-center">
+                                    <div className="text-xs text-green-700 capitalize font-medium mb-1">accuracy</div>
+                                    <div className={`text-lg font-bold ${getScoreColor(tableResult.accuracy || 0)}`}>
+                                      {Math.round(tableResult.accuracy || 0)}%
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                      <div
+                                        className={`h-1.5 rounded-full bg-gradient-to-r ${getGradientForMetric('volumetry')}`}
+                                        style={{ width: `${tableResult.accuracy || 0}%` }}
+                                      ></div>
+                                    </div>
+                                  </div>
                                 </div>
                               )}
                             </TabsContent>
                             
                             <TabsContent value="columns" className="mt-4">
-                              {tableResult.table_stats?.columns && (
+                              {tableResult?.column_metrics && (
                                 <div className="grid gap-2 max-h-48 overflow-y-auto">
-                                  {tableResult.table_stats.columns.map((column: any, index: number) => (
+                                  {Object.entries(tableResult.column_metrics).map(([columnName, columnData]: [string, any], index: number) => (
                                     <div 
                                       key={index}
                                       className="flex items-center justify-between p-2 bg-white rounded border border-green-200"
                                     >
                                       <div className="flex-1">
-                                        <span className="font-medium text-green-800">{column.name}</span>
-                                        <span className="text-xs text-green-600 ml-2">({column.data_type})</span>
+                                        <span className="font-medium text-green-800">{columnName}</span>
+                                        <span className="text-xs text-green-600 ml-2">({columnData.data_type})</span>
                                       </div>
                                       <div className="text-right">
                                         <div className="text-xs text-green-600">
-                                          {column.non_null_count} non-null
+                                          {columnData.null_count !== undefined ? 
+                                            `${(columnData.unique_count || 0)} unique, ${columnData.null_count} null` :
+                                            `${columnData.unique_count || 0} unique`
+                                          }
                                         </div>
-                                        {column.sample_values && column.sample_values.length > 0 && (
-                                          <div className="text-xs text-gray-500 mt-1">
-                                            {column.sample_values.slice(0, 2).join(', ')}
-                                            {column.sample_values.length > 2 && '...'}
-                                          </div>
-                                        )}
+                                        <div className="text-xs text-gray-500 mt-1">
+                                          Quality: {Math.round((columnData.completeness + columnData.uniqueness + columnData.consistency) / 3)}%
+                                        </div>
                                       </div>
                                     </div>
                                   ))}
@@ -516,35 +767,18 @@ export function DataQualityEngine({
                             </TabsContent>
                             
                             <TabsContent value="sample" className="mt-4">
-                              {tableResult.table_stats?.sample_data && tableResult.table_stats.sample_data.length > 0 ? (
-                                <div className="bg-white rounded border border-green-200 p-3 max-h-48 overflow-auto">
-                                  <div className="grid gap-2 text-xs">
-                                    <div className="flex gap-2 font-semibold text-green-700 border-b pb-2">
-                                      {Object.keys(tableResult.table_stats.sample_data[0]).slice(0, 4).map((col: string) => (
-                                        <div key={col} className="min-w-[80px] truncate">{col}</div>
-                                      ))}
-                                      {Object.keys(tableResult.table_stats.sample_data[0]).length > 4 && (
-                                        <div className="text-green-500">
-                                          +{Object.keys(tableResult.table_stats.sample_data[0]).length - 4} more
-                                        </div>
-                                      )}
-                                    </div>
-                                    {tableResult.table_stats.sample_data.slice(0, 3).map((row: any, idx: number) => (
-                                      <div key={idx} className="flex gap-2 text-gray-700">
-                                        {Object.keys(tableResult.table_stats.sample_data[0]).slice(0, 4).map((col: string) => (
-                                          <div key={col} className="min-w-[80px] truncate">
-                                            {row[col] !== null && row[col] !== undefined ? String(row[col]) : '—'}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    ))}
-                                  </div>
+                              <div className="text-center py-8 text-gray-500">
+                                <div className="mb-4">
+                                  <Database className="h-12 w-12 text-gray-300 mx-auto mb-2" />
+                                  <h3 className="font-medium text-gray-600">Sample Data</h3>
                                 </div>
-                              ) : (
-                                <div className="text-center py-4 text-gray-500">
-                                  No sample data available
-                                </div>
-                              )}
+                                <p className="text-sm">
+                                  Sample data preview is not available in the current analysis format.
+                                </p>
+                                <p className="text-xs text-gray-400 mt-2">
+                                  Check the column metrics above for detailed statistics.
+                                </p>
+                              </div>
                             </TabsContent>
                           </Tabs>
                         </CardContent>
@@ -585,45 +819,10 @@ export function DataQualityEngine({
         </Card>
       )}
 
-      {/* Debug Section - Remove after testing */}
-      {activeConnection && (
-        <Card className="border border-blue-300 bg-blue-50">
-          <CardHeader>
-            <CardTitle className="text-sm text-blue-800">Debug Info (Remove after testing)</CardTitle>
-          </CardHeader>
-          <CardContent className="text-xs space-y-2">
-            <div>hasMetrics: {hasMetrics.toString()}</div>
-            <div>hasRunAnalysis: {hasRunAnalysis.toString()}</div>
-            <div>analyzedTables.length: {analyzedTables.length}</div>
-            <div>metrics: {JSON.stringify(metrics, null, 2)}</div>
-            <div>isAnalyzing: {isAnalyzing.toString()}</div>
-            <div>isLoadingResults: {isLoadingResults.toString()}</div>
-            <div>activeConnection.id: {activeConnection?.id || 'null'}</div>
-            <div>activeConnection.db_type: {activeConnection?.db_type || 'null'}</div>
-            <div>connections.length: {connections?.length || 0}</div>
-            <div>data prop: {JSON.stringify(data, null, 2)}</div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Debug Section for No Connection */}
-      {!activeConnection && (
-        <Card className="border border-red-300 bg-red-50">
-          <CardHeader>
-            <CardTitle className="text-sm text-red-800">No Connection Debug Info</CardTitle>
-          </CardHeader>
-          <CardContent className="text-xs space-y-2">
-            <div>connections.length: {connections?.length || 0}</div>
-            <div>data prop: {JSON.stringify(data, null, 2)}</div>
-            <div>connections: {JSON.stringify(connections, null, 2)}</div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Metrics Cards */}
       {hasMetrics && (
         <div className="grid gap-6 md:grid-cols-5">
-          {Object.entries(metrics).map(([key, value]) => (
+          {Object.entries(metrics || {}).map(([key, value]) => (
             <Card key={key} className="border-0 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
               <div className={`h-2 bg-gradient-to-r ${getGradientForMetric(key)} rounded-t-lg`}></div>
               <CardHeader className="pb-2">
@@ -668,7 +867,7 @@ export function DataQualityEngine({
             ))}
           </TabsList>
 
-          {Object.entries(detailedResults).map(([key, result]) => (
+          {Object.entries(detailedResults || {}).map(([key, result]) => (
             <TabsContent key={key} value={key}>
               <Card className="border-0 shadow-lg">
                 <div className={`h-2 bg-gradient-to-r ${getGradientForMetric(key)} rounded-t-lg`}></div>

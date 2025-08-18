@@ -18,17 +18,25 @@ from database import clean_numeric
 def process_uploaded_file(file: UploadFile) -> Dict[str, Any]:
     """Process uploaded CSV file and create connection"""
     try:
+        print(f"Processing file: {file.filename}")
+        print(f"Content type: {file.content_type}")
+        print(f"File size: {file.size}")
+        
         # Validate file type
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail="Only CSV files are supported")
         
-        # Read file content
+        # Read file content - FastAPI way
+        file.file.seek(0)  # Reset to beginning
         content = file.file.read()
+        print(f"Read {len(content)} bytes from file")
         
         # Try to parse CSV
         try:
             df = pd.read_csv(io.BytesIO(content))
+            print(f"Successfully parsed CSV: {len(df)} rows, {len(df.columns)} columns")
         except Exception as e:
+            print(f"CSV parsing error: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Invalid CSV file: {str(e)}")
         
         if df.empty:
@@ -61,19 +69,28 @@ def process_uploaded_file(file: UploadFile) -> Dict[str, Any]:
         
         # Get sample data
         sample_data = df.head(10).to_dict('records')
+        print(f"Got sample data with {len(sample_data)} rows")
         
         # Clean sample data for JSON serialization
-        for row in sample_data:
-            for key, value in row.items():
-                row[key] = clean_numeric(value)
+        try:
+            for i, row in enumerate(sample_data):
+                for key, value in row.items():
+                    row[key] = clean_numeric(value)
+            print("Successfully cleaned sample data")
+        except Exception as e:
+            print(f"Error cleaning sample data: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Data cleaning failed: {str(e)}")
         
         return {
             "success": True,
             "connection_id": connection_id,
             "message": f"Successfully uploaded {file.filename}",
-            "filename": file.filename,
-            "rows": len(df),
-            "columns": len(df.columns),
+            "details": {
+                "filename": file.filename,
+                "record_count": len(df),
+                "size_mb": len(content) / (1024 * 1024),  # Convert bytes to MB
+                "columns": df.columns.tolist()
+            },
             "sample_data": sample_data,
             "column_info": [
                 {

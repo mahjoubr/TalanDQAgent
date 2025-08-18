@@ -10,8 +10,11 @@ class DatabaseConnection(BaseModel):
     port: int
     username: str
     password: str
-    database: str
+    database: str = Field(alias="database_name")
     db_type: str  # 'postgresql', 'mysql', 'sqlserver'
+    
+    class Config:
+        populate_by_name = True
 
 
 class PowerBIAuth(BaseModel):

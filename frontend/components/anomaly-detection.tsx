@@ -72,28 +72,33 @@ export function AnomalyDetection({
   const getActiveConnection = () => {
     // If data prop has an ID, use it
     if (data?.id) {
+      console.log('Using data prop connection:', data.id)
       return data
     }
     
     // Otherwise, use the latest connection from connections array
     if (connections && connections.length > 0) {
-      return connections[connections.length - 1]
+      const latest = connections[connections.length - 1]
+      console.log('Using latest connection from array:', latest.id)
+      return latest
     }
     
+    console.log('No active connection found')
     return null
   }
 
   const activeConnection = getActiveConnection()
 
-  // Auto-load cached results when connection becomes available
+  // Auto-load cached results when connection becomes available - CONSERVATIVE APPROACH
   useEffect(() => {
     const connection = getActiveConnection()
     
-    if (connection?.id && !isRunning) {
+    // Only load if we have a connection, aren't already loading/running, and don't have results yet
+    if (connection?.id && !isRunning && !isLoadingResults && !hasRunAnalysis) {
       console.log('Connection available, loading cached VARIMA results:', connection.id)
       loadCachedVarimaResults(connection.id)
     }
-  }, [data?.id, connections, isRunning])
+  }, [data?.id]) // Only depend on data.id to avoid constant re-triggering
 
   // Load cached VARIMA analysis results from Redis
   const loadCachedVarimaResults = async (connectionId: string) => {
@@ -117,7 +122,10 @@ export function AnomalyDetection({
             total_records: combined_results.total_records,
             connection_id: connectionId,
             analyzed_tables: analyzed_tables,
-            tables_count: combined_results.tables_analyzed
+            tables_count: combined_results.tables_analyzed,
+            // Add the full analysis data for report generation
+            combined_results: combined_results,
+            table_results: table_results
           })
         }
         
@@ -147,33 +155,16 @@ export function AnomalyDetection({
     }
   }
 
-  // Auto-run anomaly detection when a new connection becomes available
-  useEffect(() => {
-    const connection = getActiveConnection()
-    
-    if (connection?.id && !hasRunAnalysis && !isRunning && !isLoadingResults) {
-      console.log('Auto-running VARIMA anomaly detection for connection:', connection.id)
-      
-      // Show initial notification
-      toast({
-        title: "VARIMA Analysis Starting",
-        description: "Automatically running VARIMA anomaly detection on all tables in your database...",
-      })
-      
-      // Start analysis after a short delay to show the notification
-      setTimeout(() => {
-        runAutoVarimaAnalysis()
-      }, 2000)
-    }
-  }, [data?.id, connections, hasRunAnalysis, isRunning, isLoadingResults])
+  // REMOVED: Auto-run anomaly detection - now user must click button manually
 
-  // Reset analysis state when connection changes
+  // Reset analysis state when connection changes - CONSERVATIVE APPROACH
   useEffect(() => {
     const connection = getActiveConnection()
     const currentConnectionId = connection?.id
     
-    // Reset if we have a new connection
-    if (currentConnectionId && currentConnectionId !== data?.id) {
+    // Only reset if connection ID actually changes (not just props update)
+    if (currentConnectionId && data?.id && currentConnectionId !== data?.id) {
+      console.log('Connection changed, resetting VARIMA analysis state:', currentConnectionId)
       setHasRunAnalysis(false)
       setAnomalies([])
       setVarimaResults(null)
@@ -181,12 +172,13 @@ export function AnomalyDetection({
       setTableResults({})
       setAnalyzedTables([])
     }
-  }, [data?.id, connections])
+  }, [data?.id]) // Only depend on data.id to avoid excessive re-runs
 
   const runAutoVarimaAnalysis = async () => {
     const connection = getActiveConnection()
     
     if (!connection?.id) {
+      console.log('No connection available for VARIMA analysis')
       toast({
         title: "No Data Connection",
         description: "Please connect to a data source first",
@@ -195,6 +187,7 @@ export function AnomalyDetection({
       return
     }
 
+    console.log('Starting VARIMA analysis for connection:', connection.id)
     setIsRunning(true)
     setIsLoading?.(true)
 
@@ -208,6 +201,7 @@ export function AnomalyDetection({
       console.log('Running auto VARIMA analysis for connection:', connection.id)
       
       const response = await apiClient.runAutoVarimaAllTables(connection.id)
+      console.log('VARIMA API response:', response)
 
       if (response.success && response.data) {
         const analysisData = response.data
@@ -227,7 +221,10 @@ export function AnomalyDetection({
           total_records: analysisData.combined_results.total_records,
           connection_id: connection.id,
           analyzed_tables: analysisData.analyzed_tables,
-          tables_count: analysisData.combined_results.tables_analyzed
+          tables_count: analysisData.combined_results.tables_analyzed,
+          // Add the full analysis data for report generation
+          combined_results: analysisData.combined_results,
+          table_results: analysisData.table_results
         })
 
         // Load the detailed cached results
@@ -239,13 +236,14 @@ export function AnomalyDetection({
         })
 
       } else {
+        console.error('VARIMA API response not successful:', response)
         throw new Error(response.error || "API response was not successful")
       }
     } catch (error) {
       console.error("Auto VARIMA analysis failed:", error)
       
       toast({
-        title: "Analysis Failed",
+        title: "VARIMA Analysis Failed",
         description: error instanceof Error ? error.message : "Unable to analyze data. Please check your connection and try again.",
         variant: "destructive",
       })
@@ -521,7 +519,7 @@ export function AnomalyDetection({
                     Running VARIMA anomaly detection on all tables...
                   </p>
                   <p className="text-sm text-violet-600">
-                    Automatically processing all available tables in the database
+                    Processing all available tables in the database
                   </p>
                 </div>
               </div>
@@ -944,7 +942,7 @@ export function AnomalyDetection({
             <Activity className="h-16 w-16 text-gray-300 mx-auto mb-4" />
             <h3 className="text-xl font-semibold text-gray-700 mb-2">No Data Source Connected</h3>
             <p className="text-gray-500 mb-4">Connect to a database to start VARIMA anomaly detection</p>
-            <p className="text-sm text-gray-400">All tables will be analyzed automatically with multivariate time series analysis</p>
+            <p className="text-sm text-gray-400">All tables will be analyzed with multivariate time series analysis when you click the button</p>
           </CardContent>
         </Card>
       )}

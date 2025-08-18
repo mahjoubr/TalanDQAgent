@@ -58,7 +58,7 @@ interface StoredConnection {
 type Connection = DatabaseConnection | FileConnection
 
 interface DataConnectorProps {
-  onDataConnected: (data: any) => void
+  onDataConnected?: (data: any) => void
   setIsLoading?: (loading: boolean) => void
   onComplete?: (data: any) => void
   isCompleted?: boolean
@@ -121,16 +121,60 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
   // Load stored connections from backend
   const loadStoredConnections = async () => {
     const email = getUserEmail()
-    if (!email) return
+    console.log("Loading stored connections for email:", email)
+    if (!email) {
+      console.log("No email found, skipping stored connections load")
+      return
+    }
 
     setIsLoadingStored(true)
     try {
+      console.log("Calling API to get stored connections...")
       const response = await apiClient.getStoredConnections(email)
+      console.log("Full API response:", JSON.stringify(response, null, 2))
+      console.log("API response:", response)
+      console.log("Response data:", response.data)
+      console.log("Response data type:", typeof response.data)
+      console.log("Response data keys:", response.data ? Object.keys(response.data) : 'no data')
+      console.log("Response data connections:", response.data?.data?.connections)
+      
       if (response.success && response.data) {
-        setStoredConnections(response.data.connections || [])
+        console.log("Setting stored connections from nested data...")
+        // The API returns: {success: true, data: {data: {connections: [...], email: ...}}}
+        // So we need to access response.data.data.connections
+        const nestedData = response.data.data;
+        console.log("Nested data:", nestedData)
+        
+        if (nestedData && nestedData.connections && Array.isArray(nestedData.connections)) {
+          console.log("Found connections in nested data:", nestedData.connections)
+          setStoredConnections(nestedData.connections)
+        } else {
+          console.log("No connections found in nested structure")
+          setStoredConnections([])
+        }
+      } else {
+        console.log("API call unsuccessful or no data:", response)
+        console.log("Response success:", response.success)
+        console.log("Response data exists:", !!response.data)
+        console.log("Connections array exists:", !!response.data?.data?.connections)
+        
+        // Try to access the connections directly from the backend response
+        if (response.success && response.data) {
+          const backendData = response.data as any
+          console.log("Trying to access backend data directly:", backendData)
+          if (backendData.email && backendData.connections) {
+            console.log("Found connections in backend data:", backendData.connections)
+            setStoredConnections(backendData.connections)
+          } else {
+            setStoredConnections([])
+          }
+        } else {
+          setStoredConnections([])
+        }
       }
     } catch (error) {
       console.error("Failed to load stored connections:", error)
+      setStoredConnections([])
     } finally {
       setIsLoadingStored(false)
     }
@@ -140,6 +184,11 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
   useEffect(() => {
     const savedConnections = loadConnections()
     setConnections(savedConnections)
+    console.log("Loaded connections from storage:", savedConnections)
+    
+    // Debug: Check email availability
+    const email = getUserEmail()
+    console.log("Component mounted - Email from localStorage:", email)
     
     // Load stored connections from backend
     loadStoredConnections()
@@ -156,6 +205,12 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
       setHasNotifiedParent(true)
     }
   }, [stableOnDataConnected, hasNotifiedParent])
+
+  // Debug effect to monitor storedConnections state changes
+  useEffect(() => {
+    console.log("Stored connections state changed:", storedConnections)
+    console.log("Stored connections length:", storedConnections.length)
+  }, [storedConnections])
 
   // Save connections whenever they change
   useEffect(() => {
@@ -255,10 +310,15 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
         
         // Store connection string in backend
         const email = getUserEmail()
+        console.log("Storing connection for email:", email)
         if (email) {
-          await apiClient.storeConnectionString(email, finalConnectionString)
+          console.log("Calling storeConnectionString with:", email, finalConnectionString)
+          const storeResponse = await apiClient.storeConnectionString(email, finalConnectionString)
+          console.log("Store response:", storeResponse)
           // Reload stored connections to show the new one
           loadStoredConnections()
+        } else {
+          console.log("No email found, cannot store connection")
         }
 
         toast({
@@ -787,7 +847,13 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
           <CardDescription>Previously saved database connections from your account</CardDescription>
         </CardHeader>
         <CardContent>
-          {isLoadingStored ? (
+          {!getUserEmail() ? (
+            <div className="text-center py-8">
+              <Cloud className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500">Please sign in to view stored connections</p>
+              <p className="text-sm text-gray-400">Sign in first to save and access your database connections</p>
+            </div>
+          ) : isLoadingStored ? (
             <div className="text-center py-8">
               <div className="w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
               <p className="text-gray-500">Loading stored connections...</p>

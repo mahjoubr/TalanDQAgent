@@ -107,6 +107,17 @@ def export_statistics_csv(connection_id: str) -> StreamingResponse:
             from analysis import analyze_all_tables
             analysis_results = analyze_all_tables(connection_id)
         
+        # Handle both old and new format
+        if "table_results" in analysis_results:
+            # Old format: direct table_results
+            table_results = analysis_results["table_results"]
+        elif "combined_results" in analysis_results:
+            # New format: nested table_results
+            table_results = analysis_results.get("table_results", {})
+        else:
+            # Fallback
+            table_results = {}
+        
         output = io.StringIO()
         writer = csv.writer(output)
         
@@ -117,7 +128,7 @@ def export_statistics_csv(connection_id: str) -> StreamingResponse:
         ])
         
         # Write table-level statistics
-        for table_name, metrics in analysis_results.get("table_results", {}).items():
+        for table_name, metrics in table_results.items():
             if "error" not in metrics:
                 writer.writerow([
                     table_name,
@@ -139,7 +150,7 @@ def export_statistics_csv(connection_id: str) -> StreamingResponse:
             "Null_Count", "Unique_Count", "Min_Value", "Max_Value", "Mean_Value"
         ])
         
-        for table_name, metrics in analysis_results.get("table_results", {}).items():
+        for table_name, metrics in table_results.items():
             if "error" not in metrics and "column_metrics" in metrics:
                 for column_name, col_metrics in metrics["column_metrics"].items():
                     writer.writerow([
@@ -180,6 +191,17 @@ def create_powerbi_package(connection_id: str) -> Dict[str, Any]:
             from analysis import analyze_all_tables
             analysis_results = analyze_all_tables(connection_id)
         
+        # Handle different data formats
+        if "table_results" in analysis_results:
+            # Old format: direct table_results
+            table_results = analysis_results["table_results"]
+        elif "combined_results" in analysis_results and "table_results" in analysis_results["combined_results"]:
+            # New format: nested table_results
+            table_results = analysis_results["combined_results"]["table_results"]
+        else:
+            # Fallback: empty dict
+            table_results = {}
+        
         # Create temporary directory for package
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create statistics CSV
@@ -193,7 +215,7 @@ def create_powerbi_package(connection_id: str) -> Dict[str, Any]:
                     "Completeness", "Validity", "Consistency", "Uniqueness", "Accuracy"
                 ])
                 
-                for table_name, metrics in analysis_results.get("table_results", {}).items():
+                for table_name, metrics in table_results.items():
                     if "error" not in metrics:
                         writer.writerow([
                             table_name,
@@ -269,8 +291,18 @@ The CSV file contains data ready for visualization in Power BI.
             with open(zip_path, 'rb') as f:
                 zip_content = f.read()
             
+            print(f"Created ZIP file size: {len(zip_content)} bytes")  # Debug log
+            
             # Store ZIP content in Redis temporarily (5 minutes)
-            redis_client.setex(f"powerbi_package:{connection_id}", 300, zip_content)
+            try:
+                # Since Redis has decode_responses=True, we need to store as base64 string
+                import base64
+                zip_base64 = base64.b64encode(zip_content).decode('utf-8')
+                redis_client.setex(f"powerbi_package:{connection_id}", 300, zip_base64)
+                print(f"Stored ZIP in Redis with key: powerbi_package:{connection_id}, size: {len(zip_base64)} chars")  # Debug log
+            except Exception as redis_error:
+                print(f"Redis storage error: {str(redis_error)}")  # Debug log
+                raise
             
             # Open Power BI Service in browser
             powerbi_url = "https://app.powerbi.com/"
@@ -302,15 +334,61 @@ The CSV file contains data ready for visualization in Power BI.
 def get_powerbi_package(connection_id: str) -> StreamingResponse:
     """Download Power BI package ZIP file"""
     try:
-        zip_content = redis_client.get(f"powerbi_package:{connection_id}")
+        print(f"DEBUG: Attempting to retrieve PowerBI package with ID: {connection_id}")
+        
+        # Test Redis connection first
+        try:
+            redis_client.ping()
+            print("DEBUG: Redis connection is working")
+        except Exception as redis_error:
+            print(f"DEBUG: Redis connection failed: {redis_error}")
+            raise HTTPException(status_code=500, detail=f"Redis connection error: {redis_error}")
+        
+        # Check if package exists in Redis
+        redis_key = f"powerbi_package:{connection_id}"
+        print(f"DEBUG: Looking for Redis key: {redis_key}")
+        
+        # Get ZIP content from Redis
+        zip_content = redis_client.get(redis_key)
+        print(f"DEBUG: Redis lookup result: {zip_content is not None}")
+        
         if not zip_content:
-            raise HTTPException(status_code=404, detail="Package not found or expired")
+            print(f"DEBUG: Package not found in Redis for ID: {connection_id}")
+            # List all keys to debug
+            all_keys = redis_client.keys("powerbi_package:*")
+            print(f"DEBUG: All PowerBI package keys in Redis: {all_keys}")
+            raise HTTPException(status_code=404, detail="Package not found or expired. Please regenerate the package.")
+        
+        print(f"DEBUG: Package found, size: {len(zip_content)} bytes, type: {type(zip_content)}")
+        
+        # Handle Redis decode_responses=True issue
+        if isinstance(zip_content, str):
+            print("DEBUG: Converting string back to bytes")
+            # Redis returned decoded string, need to encode back to bytes
+            import base64
+            try:
+                zip_content = base64.b64decode(zip_content)
+            except Exception as decode_error:
+                print(f"DEBUG: Failed to decode base64: {decode_error}")
+                raise HTTPException(status_code=500, detail="Package data corruption - cannot decode")
+        
+        # Create BytesIO stream from the ZIP content
+        zip_stream = io.BytesIO(zip_content)
         
         return StreamingResponse(
-            io.BytesIO(zip_content),
+            zip_stream,
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename=powerbi_package_{connection_id}.zip"}
+            headers={
+                "Content-Disposition": f"attachment; filename=powerbi_package_{connection_id}.zip",
+                "Content-Length": str(len(zip_content))
+            }
         )
     
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
+        print(f"PowerBI package download error: {str(e)}")  # Add logging
+        import traceback
+        print(f"DEBUG: Full traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Package download failed: {str(e)}")

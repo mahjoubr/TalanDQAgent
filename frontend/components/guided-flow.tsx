@@ -134,9 +134,10 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
     
     // Show completion message without auto-advancing
     if (currentStep === 2) {
+      const anomalyCount = anomalyResults.total_anomalies || anomalyResults.anomalies?.length || 0
       toast({
-        title: "Anomaly Detection Complete!",
-        description: `${anomalyResults.anomalies?.length || 0} anomalies detected. Click 'Next' when ready to proceed.`,
+        title: "VARIMA Analysis Complete!",
+        description: `${anomalyCount} anomalies detected across ${anomalyResults.analyzed_tables?.length || 0} tables. Click 'Next' when ready to proceed.`,
       })
     }
   }, [currentStep, handleStepComplete, toast])
@@ -222,13 +223,14 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
           connections: connections,
           onDataConnected: handleDataConnected, // Required by DataConnector interface
           onMetricsCalculated: handleAnomalyDetectionComplete, // Use specific handler for anomaly detection
+          setIsLoading, // Pass down loading state setter
         }
       case 3: // ReportGeneration
         return {
           ...baseProps,
           data: activeConnection, // Pass the active connection
           qualityMetrics: stepData[1], // Pass the complete quality metrics object
-          varimaResults: stepData[2], // Use varimaResults instead of anomalyResults
+          anomalyResults: stepData[2], // Pass VARIMA results from step 2
           connections: connections,
           onDataConnected: handleDataConnected, // Required by DataConnector interface
           onMetricsCalculated: handleMetricsCalculated, // Required by DataQualityEngine interface

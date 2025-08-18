@@ -12,14 +12,14 @@ import JSZip from "jszip"
 
 interface ReportGenerationProps {
   qualityMetrics: any
-  varimaResults: any
+  anomalyResults: any // Changed from varimaResults to anomalyResults to match guided flow
   connections?: any[]
   data: any
 }
 
 export function ReportGeneration({ 
   qualityMetrics, 
-  varimaResults, 
+  anomalyResults, // Updated parameter name 
   connections = [], 
   data 
 }: ReportGenerationProps) {
@@ -33,7 +33,7 @@ export function ReportGeneration({
   // Debug logging to see what data we're receiving
   console.log('ReportGeneration received props:', {
     qualityMetrics,
-    varimaResults,
+    anomalyResults,
     connections,
     data
   })
@@ -97,7 +97,7 @@ export function ReportGeneration({
       addText(`Tables Analyzed: ${tablesCount}`)
       addText(`Overall Quality Score: ${overallQuality}%`)
       addText(`Total Anomalies Found: ${anomaliesCount}`)
-      addText(`Risk Level: ${varimaResults?.risk_level || 'N/A'}`)
+      addText(`Risk Level: ${anomalyResults?.risk_level || 'N/A'}`)
       addLine()
 
       // Data Quality Metrics
@@ -115,11 +115,11 @@ export function ReportGeneration({
 
       // VARIMA Analysis
       addText('ANOMALY DETECTION (VARIMA)', 16, 'bold')
-      if (varimaResults) {
-        addText(`Anomaly Rate: ${varimaResults.anomaly_rate || 0}%`)
-        addText(`Total Anomalies: ${varimaResults.total_anomalies || 0}`)
-        addText(`Total Records: ${varimaResults.total_records || 0}`)
-        addText(`Risk Assessment: ${varimaResults.risk_level || 'Unknown'}`)
+      if (anomalyResults) {
+        addText(`Anomaly Rate: ${anomalyResults.anomaly_rate || 0}%`)
+        addText(`Total Anomalies: ${anomalyResults.total_anomalies || 0}`)
+        addText(`Total Records: ${anomalyResults.total_records || 0}`)
+        addText(`Risk Assessment: ${anomalyResults.risk_level || 'Unknown'}`)
       } else {
         addText('No VARIMA analysis results available')
       }
@@ -197,120 +197,40 @@ export function ReportGeneration({
 
     setIsExportingCleanData(true)
     try {
-      const response = await apiClient.exportCleanedData(activeConnection.id)
-      
-      if (response.success && response.data) {
-        const cleanedData = response.data
-        
-        // Create ZIP package with all cleaned tables and summary
-        const zip = new JSZip()
-        
-        // Add individual CSV files for each cleaned table
-        Object.entries(cleanedData.cleaned_tables).forEach(([tableName, tableData]) => {
-          // Convert table data to CSV format
-          if (tableData.data && tableData.data.length > 0) {
-            const headers = tableData.columns.join(',')
-            const rows = tableData.data.map((row: any) => 
-              tableData.columns.map((col: string) => {
-                const value = row[col]
-                // Handle values that might contain commas or quotes
-                if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
-                  return `"${value.replace(/"/g, '""')}"`
-                }
-                return value ?? ''
-              }).join(',')
-            ).join('\n')
-            
-            const csvContent = `${headers}\n${rows}`
-            zip.file(`tables/${tableName}_cleaned.csv`, csvContent)
-          }
-        })
-        
-        // Create comprehensive summary report
-        const summaryContent = [
-          "=== CLEANED DATABASE EXPORT SUMMARY ===",
-          "",
-          `Database Type: ${cleanedData.database_type}`,
-          `Connection ID: ${cleanedData.connection_id}`,
-          `Export Timestamp: ${new Date(cleanedData.export_timestamp).toLocaleString()}`,
-          "",
-          "=== OVERALL CLEANING STATISTICS ===",
-          `Total Tables Processed: ${cleanedData.cleaning_summary.total_tables}`,
-          `Successfully Cleaned: ${cleanedData.cleaning_summary.successfully_cleaned}`,
-          `Total Original Records: ${cleanedData.cleaning_summary.original_records}`,
-          `Total Cleaned Records: ${cleanedData.cleaning_summary.cleaned_records}`,
-          `Total Removed Records: ${cleanedData.cleaning_summary.removed_records}`,
-          `Overall Cleaning Efficiency: ${cleanedData.cleaning_summary.cleaning_efficiency}%`,
-          "",
-          "=== INDIVIDUAL TABLE DETAILS ===",
-          "",
-          ...Object.entries(cleanedData.cleaned_tables).map(([tableName, tableData]) => [
-            `Table: ${tableName}`,
-            `  - Original Records: ${tableData.original_records}`,
-            `  - Cleaned Records: ${tableData.cleaned_records}`,
-            `  - Removed Records: ${tableData.removed_records}`,
-            `  - Cleaning Efficiency: ${tableData.cleaning_efficiency}%`,
-            `  - Columns (${tableData.columns.length}): ${tableData.columns.join(', ')}`,
-            ""
-          ]).flat(),
-          "=== CLEANING PROCESS DETAILS ===",
-          "",
-          "The cleaning process involved two main steps:",
-          "1. Data Quality Cleaning:",
-          "   - Removal of completely null rows",
-          "   - Removal of duplicate records", 
-          "   - Outlier detection using Interquartile Range (IQR) method",
-          "",
-          "2. VARIMA Anomaly Detection:",
-          "   - Statistical analysis of time-series patterns",
-          "   - Identification and removal of anomalous data points",
-          "   - Applied to tables with sufficient numeric data (≥2 numeric columns, ≥10 records)",
-          "",
-          "=== FILE STRUCTURE ===",
-          "",
-          "This export package contains:",
-          "- README.txt: This summary document",
-          "- summary.csv: Tabular summary of cleaning statistics",
-          "- tables/: Directory containing individual cleaned table CSV files",
-          "  " + Object.keys(cleanedData.cleaned_tables).map(name => `${name}_cleaned.csv`).join('\n  '),
-          "",
-          "Each CSV file contains the complete cleaned dataset for that table,",
-          "with all quality issues and anomalies removed according to the",
-          "cleaning process described above.",
-          ""
-        ].join("\n")
-        
-        zip.file("README.txt", summaryContent)
-        
-        // Create CSV summary for spreadsheet analysis
-        const csvSummary = [
-          "Table Name,Original Records,Cleaned Records,Removed Records,Cleaning Efficiency (%),Column Count",
-          ...Object.entries(cleanedData.cleaned_tables).map(([tableName, tableData]) => 
-            `${tableName},${tableData.original_records},${tableData.cleaned_records},${tableData.removed_records},${tableData.cleaning_efficiency},${tableData.columns.length}`
-          )
-        ].join("\n")
-        
-        zip.file("summary.csv", csvSummary)
-        
-        // Generate and download the ZIP file
-        const zipBlob = await zip.generateAsync({type: "blob"})
-        const url = window.URL.createObjectURL(zipBlob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `cleaned_data_export_${activeConnection.id}_${new Date().toISOString().slice(0, 10)}.zip`
-        document.body.appendChild(a)
-        a.click()
-        window.URL.revokeObjectURL(url)
-        document.body.removeChild(a)
-        
-        toast({
-          title: "Complete Data Export Ready!",
-          description: `Exported ${cleanedData.cleaning_summary.successfully_cleaned} cleaned tables with ${cleanedData.cleaning_summary.cleaned_records} total records. Download includes individual CSV files and comprehensive summary.`,
-        })
-      } else {
-        throw new Error("Failed to export cleaned data")
+      // Make direct fetch request to handle CSV response
+      const response = await fetch(`${apiClient.apiBaseUrl}/api/analysis/export-cleaned-data`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ connection_id: activeConnection.id }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
       }
+
+      // Get the CSV data as text
+      const csvData = await response.text()
+      
+      // Create and download the CSV file
+      const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' })
+      const link = document.createElement('a')
+      const url = URL.createObjectURL(blob)
+      link.setAttribute('href', url)
+      link.setAttribute('download', `cleaned_data_export_${activeConnection.id}_${new Date().toISOString().split('T')[0]}.csv`)
+      link.style.visibility = 'hidden'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+      
+      toast({
+        title: "Clean Data Exported",
+        description: "Cleaned data has been exported successfully as CSV file.",
+      })
     } catch (error) {
+      console.error('Export cleaned data error:', error)
       toast({
         title: "Export Failed",
         description: "Unable to export cleaned data. Please try again.",
@@ -333,29 +253,38 @@ export function ReportGeneration({
 
     setIsExportingStatistics(true)
     try {
-      const response = await apiClient.exportAnalysisStatistics(activeConnection.id)
-      
-      if (response.success && response.data) {
-        const { csv_data, overall_statistics, table_statistics } = response.data
-        
-        // Create and download the CSV file
-        const blob = new Blob([csv_data], { type: 'text/csv;charset=utf-8;' })
-        const link = document.createElement('a')
-        const url = URL.createObjectURL(blob)
-        link.setAttribute('href', url)
-        link.setAttribute('download', `analysis_statistics_${activeConnection.id}_${new Date().toISOString().split('T')[0]}.csv`)
-        link.style.visibility = 'hidden'
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        
-        toast({
-          title: "Statistics Exported Successfully",
-          description: `Analysis statistics exported for ${table_statistics.length} table(s) with ${overall_statistics.overall_risk_level} risk level (${overall_statistics.overall_risk_percentage}% risk). Overall quality: ${overall_statistics.overall_quality_score}/100.`,
-        })
-      } else {
-        throw new Error("Failed to export analysis statistics")
+      // Make direct fetch request to handle CSV response
+      const response = await fetch(`${apiClient.apiBaseUrl}/api/analysis/export-statistics`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ connection_id: activeConnection.id }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
       }
+
+      // Get the CSV data as text
+      const csvData = await response.text()
+      
+      // Create and download the CSV file
+      const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' })
+      const link = document.createElement('a')
+      const url = URL.createObjectURL(blob)
+      link.setAttribute('href', url)
+      link.setAttribute('download', `analysis_statistics_${activeConnection.id}_${new Date().toISOString().split('T')[0]}.csv`)
+      link.style.visibility = 'hidden'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+      
+      toast({
+        title: "Statistics Exported Successfully",
+        description: "Analysis statistics have been exported successfully as CSV file.",
+      })
     } catch (error) {
       console.error("Export statistics error:", error)
       toast({
@@ -397,16 +326,28 @@ export function ReportGeneration({
 
     setIsOpeningPowerBI(true)
     try {
-      // Call the Power BI Desktop endpoint which now creates a complete package
-      const openResponse = await apiClient.openPowerBIDesktop(activeConnection.id)
+      // Step 1: Create the PowerBI package
+      const response = await fetch(`${apiClient.apiBaseUrl}/api/powerbi/open-online`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ connection_id: activeConnection.id }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to create PowerBI package: ${response.status}`)
+      }
+
+      const packageResponse = await response.json()
       
-      if (openResponse.success && openResponse.data) {
+      if (packageResponse.success) {
         // Show success message
         const packageContents = []
-        if (openResponse.data.template_available) {
+        if (packageResponse.package_contents?.template) {
           packageContents.push("🎯 Custom Power BI template (.pbit)")
         }
-        if (openResponse.data.pbix_available) {
+        if (packageResponse.package_contents?.dashboard) {
           packageContents.push("📈 Pre-built dashboard (.pbix)")
         }
         packageContents.push("📊 Analysis data (CSV)")
@@ -417,51 +358,60 @@ export function ReportGeneration({
           description: `Package includes: ${packageContents.join(", ")}. Download will start automatically.`,
         })
         
-        // Trigger download
-        if (openResponse.data.download_url) {
-          const downloadUrl = `${apiClient.apiBaseUrl}${openResponse.data.download_url}`
+        // Step 2: Download the package file
+        if (packageResponse.download_url) {
+          const downloadUrl = `${apiClient.apiBaseUrl}${packageResponse.download_url}`
           
-          // Create a temporary link to trigger download
-          const link = document.createElement('a')
-          link.href = downloadUrl
-          link.download = `PowerBI_DataQuality_Package_${activeConnection.id}.zip`
-          document.body.appendChild(link)
-          link.click()
-          document.body.removeChild(link)
-          
-          // Show additional instructions after a delay
-          setTimeout(() => {
-            const workflowMessage = openResponse.data?.template_available 
-              ? "📁 Extract the ZIP → Open .pbit template → Connect to CSV data → Dashboard ready!"
-              : "📁 Extract the ZIP → Import CSV to Power BI → Create visualizations"
-              
+          try {
+            const downloadResponse = await fetch(downloadUrl)
+            if (!downloadResponse.ok) {
+              throw new Error(`Download failed: ${downloadResponse.status}`)
+            }
+            
+            // Get the ZIP file as blob
+            const blob = await downloadResponse.blob()
+            
+            // Create and trigger download
+            const link = document.createElement('a')
+            const url = URL.createObjectURL(blob)
+            link.href = url
+            link.download = `PowerBI_DataQuality_Package_${activeConnection.id}.zip`
+            link.style.visibility = 'hidden'
+            document.body.appendChild(link)
+            link.click()
+            document.body.removeChild(link)
+            URL.revokeObjectURL(url)
+            
+            // Show additional instructions after a delay
+            setTimeout(() => {
+              const workflowMessage = packageResponse.package_contents?.template 
+                ? "📁 Extract the ZIP → Open .pbit template → Connect to CSV data → Dashboard ready!"
+                : "📁 Extract the ZIP → Import CSV to Power BI → Create visualizations"
+                
+              toast({
+                title: "Next Steps",
+                description: workflowMessage,
+              })
+            }, 2000)
+          } catch (downloadError) {
+            console.error('Download error:', downloadError)
             toast({
-              title: "Next Steps",
-              description: workflowMessage,
+              title: "Download Failed",
+              description: "Package was created but download failed. Please try again.",
+              variant: "destructive",
             })
-          }, 2000)
-        }
-        
-        // Show data summary
-        if (openResponse.data.data_summary) {
-          const summary = openResponse.data.data_summary
-          setTimeout(() => {
-            toast({
-              title: "Data Summary",
-              description: `${summary.total_tables} tables • ${summary.overall_score.toFixed(1)}% quality • ${summary.anomalies} anomalies • ${summary.risk_level} risk`,
-            })
-          }, 4000)
+          }
         }
         
       } else {
-        throw new Error("Failed to create Power BI package")
+        throw new Error(packageResponse.message || "Failed to create Power BI package")
       }
     } catch (error) {
       console.error("Power BI visualization error:", error)
       
       toast({
         title: "Package Creation Failed",
-        description: "Unable to create Power BI package. Please try again.",
+        description: "Unable to create Power BI package. Please ensure the backend is running and try again.",
         variant: "destructive",
       })
     } finally {
@@ -469,9 +419,9 @@ export function ReportGeneration({
     }
   }
 
-  const hasData = qualityMetrics || varimaResults
+  const hasData = qualityMetrics || anomalyResults
   const tablesCount = qualityMetrics?.analyzed_tables?.length || 0
-  const anomaliesCount = varimaResults?.total_anomalies || 0
+  const anomaliesCount = anomalyResults?.total_anomalies || 0
   const overallQuality = qualityMetrics?.metrics ? 
     Math.round((
       (qualityMetrics.metrics.completeness || 0) + 
@@ -488,7 +438,7 @@ export function ReportGeneration({
     anomaliesCount,
     overallQuality,
     qualityMetricsStructure: qualityMetrics ? Object.keys(qualityMetrics) : 'No quality metrics',
-    varimaResultsStructure: varimaResults ? Object.keys(varimaResults) : 'No varima results'
+    varimaResultsStructure: anomalyResults ? Object.keys(anomalyResults) : 'No varima results'
   })
 
   return (
@@ -521,11 +471,11 @@ export function ReportGeneration({
               )}
             </div>
             <div>
-              <strong>VARIMA Results:</strong> {varimaResults ? 'Present' : 'Missing'}
-              {varimaResults && (
+              <strong>VARIMA Results:</strong> {anomalyResults ? 'Present' : 'Missing'}
+              {anomalyResults && (
                 <div className="ml-2">
-                  <div>Anomalies: {varimaResults.total_anomalies || 0}</div>
-                  <div>Risk: {varimaResults.risk_level || 'N/A'}</div>
+                  <div>Anomalies: {anomalyResults.total_anomalies || 0}</div>
+                  <div>Risk: {anomalyResults.risk_level || 'N/A'}</div>
                 </div>
               )}
             </div>
@@ -569,7 +519,7 @@ export function ReportGeneration({
               </div>
               <div className="bg-white rounded-lg border border-purple-200 p-4 text-center">
                 <div className="text-2xl font-bold text-purple-700">
-                  {varimaResults?.risk_level || 'N/A'}
+                  {anomalyResults?.risk_level || 'N/A'}
                 </div>
                 <div className="text-sm text-purple-600">Risk Level</div>
               </div>
