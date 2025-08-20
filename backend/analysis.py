@@ -316,12 +316,12 @@ def run_anomaly_detection(connection_id: str, table_name: Optional[str] = None) 
         if len(numeric_cols) < 2:
             raise HTTPException(status_code=400, detail="At least 2 numeric columns required for VARIMA analysis")
         
-        # Use the existing run_varima_detection function from varima_detector.py
-        varima_results = run_varima_detection(df[numeric_cols], threshold=2.0, max_components=5)
+        # Use the new detect_varima_anomalies function from varima_detector.py
+        varima_results = detect_varima_anomalies(df)
         
-        # Extract results
-        anomaly_count = int(varima_results['anomaly_varima'].sum()) if 'anomaly_varima' in varima_results else 0
-        anomaly_indices = varima_results[varima_results['anomaly_varima'] == True].index.tolist() if 'anomaly_varima' in varima_results else []
+        # Extract results - the new function returns 'anomaly' column, not 'anomaly_varima'
+        anomaly_count = int(varima_results['anomaly'].sum()) if 'anomaly' in varima_results else 0
+        anomaly_indices = varima_results[varima_results['anomaly'] == True].index.tolist() if 'anomaly' in varima_results else []
         
         result = {
             "connection_id": connection_id,

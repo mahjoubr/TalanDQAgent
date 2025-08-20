@@ -249,3 +249,59 @@ def cleanup_file_connection(connection_id: str) -> Dict[str, Any]:
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
+
+
+def update_file_row(connection_id: str, row_index: int, updated_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Update a specific row in the CSV file"""
+    try:
+        connection_info_data = redis_client.get(f"connection:{connection_id}")
+        if not connection_info_data:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        connection_info = json.loads(connection_info_data)
+        
+        if connection_info["type"] != "file":
+            raise HTTPException(status_code=400, detail="Not a file connection")
+        
+        file_path = connection_info.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Read the current CSV file
+        df = pd.read_csv(file_path)
+        
+        # Validate row index
+        if row_index < 0 or row_index >= len(df):
+            raise HTTPException(status_code=400, detail=f"Row index {row_index} out of range")
+        
+        # Update the row with new data
+        for column, value in updated_data.items():
+            if column in df.columns:
+                # Convert value to appropriate type based on existing column
+                try:
+                    if pd.api.types.is_numeric_dtype(df[column]):
+                        df.loc[row_index, column] = pd.to_numeric(value, errors='coerce')
+                    else:
+                        df.loc[row_index, column] = str(value)
+                except (ValueError, TypeError):
+                    df.loc[row_index, column] = str(value)
+        
+        # Save the updated dataframe back to the CSV file
+        df.to_csv(file_path, index=False)
+        
+        # Clear any cached analysis results since data has changed
+        redis_client.delete(f"analysis:{connection_id}")
+        redis_client.delete(f"varima:{connection_id}")
+        redis_client.delete(f"varima:{connection_id}:file_data")
+        
+        return {
+            "success": True,
+            "message": f"Row {row_index} updated successfully",
+            "updated_columns": list(updated_data.keys()),
+            "row_index": row_index
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update file row: {str(e)}")

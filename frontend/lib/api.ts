@@ -148,7 +148,7 @@ class ApiClient {
 
       // First, try to connect to the real backend
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 5000)
+      const timeoutId = setTimeout(() => controller.abort(), 300000) // 5 minutes for VARIMA analysis
 
       try {
         const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -217,15 +217,20 @@ class ApiClient {
     return this.request("/api/connections")
   }
 
-  async getConnectionSample(connectionId: string, limit: number = 100): Promise<ApiResponse<{
-    sample: {
-      columns: string[]
-      data: Record<string, any>[]
-      total_rows: number
-      data_types: Record<string, string>
-    }
+  async getConnectionSample(connectionId: string, limit: number = 100, tableName?: string): Promise<ApiResponse<{
+    connection_id: string
+    filename?: string
+    table_name?: string
+    total_rows: number
+    sample_rows: number
+    columns: string[]
+    sample_data: Record<string, any>[]
   }>> {
-    return this.request(`/api/connections/${connectionId}/sample?limit=${limit}`)
+    const params = new URLSearchParams({ limit: limit.toString() })
+    if (tableName) {
+      params.append('table_name', tableName)
+    }
+    return this.request(`/api/connections/${connectionId}/sample?${params.toString()}`)
   }
 
   async getTableStatistics(connectionId: string): Promise<ApiResponse<{
@@ -344,26 +349,6 @@ class ApiClient {
     analyzed_tables: string[]
   }>> {
     return this.request(`/api/analysis/cached-results/${connectionId}`)
-  }
-
-  async getCachedTableResults(connectionId: string, tableName: string): Promise<ApiResponse<{
-    data: QualityAnalysisResult & {
-      table_name: string
-      table_stats: {
-        row_count: number
-        column_count: number
-        columns: Array<{
-          name: string
-          data_type: string
-          non_null_count: number
-          sample_values: string[]
-        }>
-        sample_data: Record<string, any>[]
-      }
-    }
-    table_name: string
-  }>> {
-    return this.request(`/api/analysis/table-results/${connectionId}/${tableName}`)
   }
 
   async runAnomalyDetection(
@@ -652,7 +637,50 @@ async createPowerBITemplate(connectionId: string): Promise<ApiResponse<{
     method: "POST",
   })
 }
+
+async updateRowData(connectionId: string, rowIndex: number, updatedData: Record<string, any>): Promise<ApiResponse<{
+  success: boolean
+  message: string
+  updated_columns: string[]
+  row_index: number
+}>> {
+  return this.request(`/api/connections/${connectionId}/update-row`, {
+    method: "PUT",
+    body: JSON.stringify({
+      row_index: rowIndex,
+      updated_data: updatedData
+    }),
+    headers: {
+      'Content-Type': 'application/json'
+    }
+  })
 }
 
+  // Data Cleaning endpoints
+  async getCleaningOptions(connectionId: string, tableName?: string): Promise<ApiResponse> {
+    return this.request("/api/data-cleaning/preview-options", {
+      method: "POST",
+      body: JSON.stringify({
+        connection_id: connectionId,
+        table_name: tableName
+      })
+    })
+  }
+
+  async cleanData(connectionId: string, cleaningOptions: any, tableName?: string): Promise<ApiResponse> {
+    return this.request("/api/data-cleaning/clean-data", {
+      method: "POST",
+      body: JSON.stringify({
+        connection_id: connectionId,
+        table_name: tableName,
+        cleaning_options: cleaningOptions
+      })
+    })
+  }
+
+  async downloadCleanedData(filename: string): Promise<Response> {
+    return fetch(`${this.baseUrl}/api/data-cleaning/download/${filename}`)
+  }
+}
 
 export const apiClient = new ApiClient()

@@ -194,7 +194,6 @@ export function PowerBIEmbed({ onDataConnected }: PowerBIEmbedProps) {
       script.src = "https://cdn.jsdelivr.net/npm/powerbi-client@2.22.0/dist/powerbi.min.js"
       script.onload = () => {
         // Power BI embed logic would go here
-        console.log("Power BI client loaded")
       }
       document.head.appendChild(script)
 

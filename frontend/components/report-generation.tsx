@@ -4,7 +4,10 @@ import React, { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { FileText, Download, Loader2, Database, Activity, BarChart3 } from "lucide-react"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Label } from "@/components/ui/label"
+import { FileText, Download, Loader2, Database, Activity, BarChart3, Settings, Trash2, Droplets } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { apiClient } from "@/lib/api"
 import jsPDF from "jspdf"
@@ -28,15 +31,17 @@ export function ReportGeneration({
   const [isExportingStatistics, setIsExportingStatistics] = useState(false)
   const [isOpeningPowerBI, setIsOpeningPowerBI] = useState(false)
   const [powerBIInstalled, setPowerBIInstalled] = useState<boolean | null>(null)
-  const { toast } = useToast()
-
-  // Debug logging to see what data we're receiving
-  console.log('ReportGeneration received props:', {
-    qualityMetrics,
-    anomalyResults,
-    connections,
-    data
+  
+  // Data cleaning state
+  const [isCleaningData, setIsCleaningData] = useState(false)
+  const [cleaningOptions, setCleaningOptions] = useState({
+    drop_nulls: true,
+    drop_duplicates: true,
+    fill_missing: false
   })
+  const [fillMethod, setFillMethod] = useState('mean')
+  const [showCleaningOptions, setShowCleaningOptions] = useState(false)
+  const { toast } = useToast()
 
   // Get the active connection
   const getActiveConnection = () => {
@@ -89,7 +94,7 @@ export function ReportGeneration({
       // Header
       addText('DATA QUALITY & VARIMA ANALYSIS REPORT', 18, 'bold')
       addText(`Generated: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, 10)
-      addText(`Connection: ${activeConnection.db_type || 'Database'} • ${activeConnection.id}`, 10)
+      addText(`Connection: ${activeConnection.db_type || 'Database'}`, 10)
       addLine()
 
       // Executive Summary
@@ -226,8 +231,8 @@ export function ReportGeneration({
       URL.revokeObjectURL(url)
       
       toast({
-        title: "Clean Data Exported",
-        description: "Cleaned data has been exported successfully as CSV file.",
+        title: "VARIMA Input Data Exported",
+        description: "Processed data ready for VARIMA analysis has been exported successfully as CSV file.",
       })
     } catch (error) {
       console.error('Export cleaned data error:', error)
@@ -238,6 +243,62 @@ export function ReportGeneration({
       })
     } finally {
       setIsExportingCleanData(false)
+    }
+  }
+
+  const exportCustomCleanedData = async () => {
+    if (!activeConnection?.id) {
+      toast({
+        title: "No Connection",
+        description: "Please connect to a database first",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsCleaningData(true)
+    try {
+      // Execute cleaning
+      const cleanResponse = await apiClient.cleanData(
+        activeConnection.id, 
+        {
+          ...cleaningOptions,
+          fill_method: fillMethod
+        }
+      )
+      
+      if (cleanResponse.success && cleanResponse.data?.filename) {
+        // Download the cleaned file
+        const downloadResponse = await apiClient.downloadCleanedData(cleanResponse.data.filename)
+        
+        // Create and trigger download
+        const blob = await downloadResponse.blob()
+        const link = document.createElement('a')
+        const url = URL.createObjectURL(blob)
+        link.href = url
+        link.download = `custom_cleaned_data_${activeConnection.id}_${new Date().toISOString().split('T')[0]}.csv`
+        link.style.visibility = 'hidden'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        URL.revokeObjectURL(url)
+        
+        toast({
+          title: "Custom Cleaned Data Exported",
+          description: `Data cleaned successfully with your selected options. Records processed: ${cleanResponse.data?.stats?.final_shape?.[0] || 'N/A'}`,
+        })
+      } else {
+        throw new Error(cleanResponse.message || "Cleaning failed")
+      }
+    } catch (error) {
+      console.error('Custom cleaning error:', error)
+      toast({
+        title: "Cleaning Failed",
+        description: "Unable to clean data with selected options. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsCleaningData(false)
     }
   }
 
@@ -431,16 +492,6 @@ export function ReportGeneration({
       (qualityMetrics.metrics.volumetry || 0)
     ) / 5) : 0
 
-  // Additional debug info
-  console.log('Report Generation computed values:', {
-    hasData,
-    tablesCount,
-    anomaliesCount,
-    overallQuality,
-    qualityMetricsStructure: qualityMetrics ? Object.keys(qualityMetrics) : 'No quality metrics',
-    varimaResultsStructure: anomalyResults ? Object.keys(anomalyResults) : 'No varima results'
-  })
-
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -453,34 +504,9 @@ export function ReportGeneration({
         </p>
         {activeConnection && (
           <p className="text-sm text-blue-600 mt-1">
-            Connected to: {activeConnection.db_type ? `${activeConnection.db_type?.toUpperCase()} Database` : 'Database'} • {activeConnection.id}
+            Connected to: {activeConnection.db_type ? `${activeConnection.db_type?.toUpperCase()} Database` : 'Database'}
           </p>
         )}
-        
-        {/* Debug Info - Remove in production */}
-        <div className="mt-4 p-4 bg-gray-100 rounded-lg text-xs">
-          <h4 className="font-semibold mb-2">Debug Information:</h4>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <strong>Quality Metrics:</strong> {qualityMetrics ? 'Present' : 'Missing'}
-              {qualityMetrics && (
-                <div className="ml-2">
-                  <div>Tables: {qualityMetrics.analyzed_tables?.length || 0}</div>
-                  <div>Has metrics: {qualityMetrics.metrics ? 'Yes' : 'No'}</div>
-                </div>
-              )}
-            </div>
-            <div>
-              <strong>VARIMA Results:</strong> {anomalyResults ? 'Present' : 'Missing'}
-              {anomalyResults && (
-                <div className="ml-2">
-                  <div>Anomalies: {anomalyResults.total_anomalies || 0}</div>
-                  <div>Risk: {anomalyResults.risk_level || 'N/A'}</div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* Data Summary */}
@@ -529,7 +555,7 @@ export function ReportGeneration({
       )}
 
       {/* Report Generation */}
-      <div className="grid gap-6 md:grid-cols-3">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
         <Card className="border-0 shadow-lg">
           <div className="h-2 bg-gradient-to-r from-red-500 to-pink-500 rounded-t-lg"></div>
           <CardHeader>
@@ -582,33 +608,155 @@ export function ReportGeneration({
         </Card>
 
         <Card className="border-0 shadow-lg">
+          <div className="h-2 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-t-lg"></div>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-3 text-xl">
+              <div className="p-2 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-lg">
+                <Settings className="h-5 w-5 text-white" />
+              </div>
+              Custom Data Cleaning
+            </CardTitle>
+            <CardDescription>
+              Clean data with customizable options - tick what you need
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="font-semibold text-gray-700">Cleaning Options:</h4>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowCleaningOptions(!showCleaningOptions)}
+                  className="text-emerald-600 hover:text-emerald-700"
+                >
+                  <Settings className="h-4 w-4 mr-1" />
+                  {showCleaningOptions ? 'Hide' : 'Configure'}
+                </Button>
+              </div>
+
+              {showCleaningOptions && (
+                <div className="space-y-3 p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                  <div className="space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        id="drop_nulls"
+                        checked={cleaningOptions.drop_nulls}
+                        onCheckedChange={(checked) => 
+                          setCleaningOptions(prev => ({ ...prev, drop_nulls: checked as boolean }))
+                        }
+                      />
+                      <Label htmlFor="drop_nulls" className="text-sm flex items-center gap-1">
+                        <Trash2 className="h-3 w-3 text-red-500" />
+                        Drop null values
+                      </Label>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        id="drop_duplicates"
+                        checked={cleaningOptions.drop_duplicates}
+                        onCheckedChange={(checked) => 
+                          setCleaningOptions(prev => ({ ...prev, drop_duplicates: checked as boolean }))
+                        }
+                      />
+                      <Label htmlFor="drop_duplicates" className="text-sm flex items-center gap-1">
+                        <Trash2 className="h-3 w-3 text-orange-500" />
+                        Drop duplicate values
+                      </Label>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        id="fill_missing"
+                        checked={cleaningOptions.fill_missing}
+                        onCheckedChange={(checked) => 
+                          setCleaningOptions(prev => ({ ...prev, fill_missing: checked as boolean }))
+                        }
+                      />
+                      <Label htmlFor="fill_missing" className="text-sm flex items-center gap-1">
+                        <Droplets className="h-3 w-3 text-blue-500" />
+                        Fill missing values with mean value
+                      </Label>
+                    </div>
+
+                    {cleaningOptions.fill_missing && (
+                      <div className="ml-6">
+                        <Select value={fillMethod} onValueChange={setFillMethod}>
+                          <SelectTrigger className="w-32">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="mean">Mean</SelectItem>
+                            <SelectItem value="median">Median</SelectItem>
+                            <SelectItem value="mode">Mode</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1 text-sm text-gray-600">
+                <div className="flex items-center gap-2">
+                  <Settings className="h-4 w-4 text-emerald-500" />
+                  <span>Customizable cleaning options</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Download className="h-4 w-4 text-blue-500" />
+                  <span>Export as CSV after cleaning</span>
+                </div>
+              </div>
+            </div>
+            <Button
+              onClick={exportCustomCleanedData}
+              disabled={isCleaningData || !activeConnection}
+              className="w-full bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white"
+            >
+              {isCleaningData ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Cleaning Data...
+                </>
+              ) : (
+                <>
+                  <Download className="mr-2 h-4 w-4" />
+                  Clean & Export Data
+                </>
+              )}
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="border-0 shadow-lg">
           <div className="h-2 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-t-lg"></div>
           <CardHeader>
             <CardTitle className="flex items-center gap-3 text-xl">
               <div className="p-2 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-lg">
                 <Database className="h-5 w-5 text-white" />
               </div>
-              Clean Data Export
+              VARIMA Input Data Export
             </CardTitle>
             <CardDescription>
-              Export cleaned data after quality analysis and VARIMA anomaly removal
+              Export processed data ready for VARIMA anomaly detection analysis
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <h4 className="font-semibold text-gray-700">Cleaning Process:</h4>
+              <h4 className="font-semibold text-gray-700">Data Processing:</h4>
               <div className="space-y-1 text-sm text-gray-600">
                 <div className="flex items-center gap-2">
                   <Database className="h-4 w-4 text-green-500" />
-                  <span>Remove null records & duplicates</span>
+                  <span>Basic data cleaning & validation</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Activity className="h-4 w-4 text-purple-500" />
-                  <span>VARIMA-based anomaly removal</span>
+                  <span>Prepared for VARIMA analysis</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <BarChart3 className="h-4 w-4 text-blue-500" />
-                  <span>Statistical outlier filtering</span>
+                  <span>Ready for anomaly detection</span>
                 </div>
               </div>
             </div>
@@ -620,12 +768,12 @@ export function ReportGeneration({
               {isExportingCleanData ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Exporting Clean Data...
+                  Exporting VARIMA Input Data...
                 </>
               ) : (
                 <>
                   <Download className="mr-2 h-4 w-4" />
-                  Export Clean Data
+                  Export VARIMA Input Data
                 </>
               )}
             </Button>
@@ -642,7 +790,7 @@ export function ReportGeneration({
               Analysis Statistics Export
             </CardTitle>
             <CardDescription>
-              Export comprehensive statistics including quality metrics, anomaly detection results, and risk assessment
+              Export comprehensive statistics including quality metrics, detailed anomaly detection analysis, and complete risk assessment
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -651,15 +799,19 @@ export function ReportGeneration({
               <div className="space-y-1 text-sm text-gray-600">
                 <div className="flex items-center gap-2">
                   <BarChart3 className="h-4 w-4 text-green-500" />
-                  <span>Quality metrics (5 indicators)</span>
+                  <span>Quality metrics (completeness, uniqueness, consistency)</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Activity className="h-4 w-4 text-purple-500" />
-                  <span>VARIMA anomaly detection results</span>
+                  <span>VARIMA anomaly detection results & patterns</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-red-500" />
+                  <span>Detected anomalies count & risk levels</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Database className="h-4 w-4 text-blue-500" />
-                  <span>Data source information & risk assessment</span>
+                  <span>Data source information & statistical summary</span>
                 </div>
               </div>
             </div>

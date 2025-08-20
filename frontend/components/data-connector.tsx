@@ -121,49 +121,29 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
   // Load stored connections from backend
   const loadStoredConnections = async () => {
     const email = getUserEmail()
-    console.log("Loading stored connections for email:", email)
     if (!email) {
-      console.log("No email found, skipping stored connections load")
       return
     }
 
     setIsLoadingStored(true)
     try {
-      console.log("Calling API to get stored connections...")
       const response = await apiClient.getStoredConnections(email)
-      console.log("Full API response:", JSON.stringify(response, null, 2))
-      console.log("API response:", response)
-      console.log("Response data:", response.data)
-      console.log("Response data type:", typeof response.data)
-      console.log("Response data keys:", response.data ? Object.keys(response.data) : 'no data')
-      console.log("Response data connections:", response.data?.data?.connections)
       
       if (response.success && response.data) {
-        console.log("Setting stored connections from nested data...")
         // The API returns: {success: true, data: {data: {connections: [...], email: ...}}}
         // So we need to access response.data.data.connections
         const nestedData = response.data.data;
-        console.log("Nested data:", nestedData)
         
         if (nestedData && nestedData.connections && Array.isArray(nestedData.connections)) {
-          console.log("Found connections in nested data:", nestedData.connections)
           setStoredConnections(nestedData.connections)
         } else {
-          console.log("No connections found in nested structure")
           setStoredConnections([])
         }
       } else {
-        console.log("API call unsuccessful or no data:", response)
-        console.log("Response success:", response.success)
-        console.log("Response data exists:", !!response.data)
-        console.log("Connections array exists:", !!response.data?.data?.connections)
-        
         // Try to access the connections directly from the backend response
         if (response.success && response.data) {
           const backendData = response.data as any
-          console.log("Trying to access backend data directly:", backendData)
           if (backendData.email && backendData.connections) {
-            console.log("Found connections in backend data:", backendData.connections)
             setStoredConnections(backendData.connections)
           } else {
             setStoredConnections([])

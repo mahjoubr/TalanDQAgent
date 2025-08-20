@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
-import { AlertTriangle, Download, Edit, Play, Activity, Zap, Loader2, Database } from "lucide-react"
+import { AlertTriangle, Edit, Play, Activity, Zap, Loader2, Database, Save, X, Check } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { apiClient } from "@/lib/api"
 
@@ -40,21 +40,12 @@ export function AnomalyDetection({
   const [tableResults, setTableResults] = useState<Record<string, any>>({})
   const [selectedTableForView, setSelectedTableForView] = useState<string>("")
   const [varimaThreshold, setVarimaThreshold] = useState([2.0])
-  const [anomalies, setAnomalies] = useState([
-    {
-      id: 4,
-      model: "VARIMA",
-      field: "time_series_pattern",
-      value: "irregular",
-      score: 1.8,
-      severity: "medium",
-      description: "Irregular time series pattern detected in multivariate financial data",
-      confidence: 82,
-    },
-  ])
+  const [anomalies, setAnomalies] = useState<any[]>([]) // Remove mock data
   const [varimaResults, setVarimaResults] = useState<any>(null)
   const [combinedResults, setCombinedResults] = useState<any>(null)
   const [editingAnomaly, setEditingAnomaly] = useState<number | null>(null)
+  const [editingAnomalyData, setEditingAnomalyData] = useState<Record<string, any>>({})
+  const [savingEdit, setSavingEdit] = useState(false)
   const { toast } = useToast()
 
   const models = [
@@ -371,25 +362,65 @@ export function AnomalyDetection({
     })
   }
 
-  const exportData = () => {
-    const csvContent = [
-      "ID,Model,Field,Value,Score,Severity,Confidence,Description",
-      ...anomalies.map(
-        (a) => `${a.id},${a.model},${a.field},${a.value},${a.score},${a.severity},${a.confidence}%,"${a.description}"`,
-      ),
-    ].join("\n")
+  const startEditingAnomalyRow = async (tableName: string, rowIndex: number) => {
+    const connection = getActiveConnection()
+    if (!connection?.id) return
 
-    const blob = new Blob([csvContent], { type: "text/csv" })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = "anomaly_detection_results.csv"
-    a.click()
+    try {
+      // Get the actual row data for editing (pass table name for database connections)
+      const response = await apiClient.getConnectionSample(connection.id, 1000, tableName)
+      if (response.success && response.data?.sample_data) {
+        const rowData = response.data.sample_data[rowIndex]
+        if (rowData) {
+          setEditingAnomalyData(rowData)
+          setEditingAnomaly(rowIndex)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch row data:', error)
+      toast({
+        title: "Error",
+        description: "Failed to load row data for editing",
+        variant: "destructive",
+      })
+    }
+  }
 
-    toast({
-      title: "Export Successful",
-      description: "Anomaly detection results exported to CSV file",
-    })
+  const saveAnomalyEdit = async (tableName: string, rowIndex: number, updatedData: Record<string, any>) => {
+    const connection = getActiveConnection()
+    if (!connection?.id) return
+
+    setSavingEdit(true)
+    try {
+      // Make API call to update the actual data in the file
+      const response = await apiClient.updateRowData(connection.id, rowIndex, updatedData)
+      
+      if (response.success) {
+        setEditingAnomaly(null)
+        setEditingAnomalyData({})
+        
+        toast({
+          title: "Row Updated Successfully",
+          description: `Row ${rowIndex} has been updated in the dataset. The cached analysis has been cleared - re-run analysis to see updated results.`,
+        })
+      } else {
+        throw new Error(response.error || "Update failed")
+      }
+    } catch (error) {
+      console.error('Failed to save row edit:', error)
+      toast({
+        title: "Update Failed", 
+        description: `Failed to update row data: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        variant: "destructive",
+      })
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  const cancelAnomalyEdit = () => {
+    setEditingAnomaly(null)
+    setEditingAnomalyData({})
   }
 
   const getSeverityColor = (severity: string) => {
@@ -475,14 +506,6 @@ export function AnomalyDetection({
         </div>
         <div className="flex gap-3">
           <Button
-            onClick={exportData}
-            variant="outline"
-            className="border-violet-200 hover:bg-violet-50 bg-transparent"
-          >
-            <Download className="mr-2 h-4 w-4" />
-            Export Results
-          </Button>
-          <Button
             onClick={() => runAutoVarimaAnalysis()}
             disabled={isRunning || !activeConnection}
             className="bg-gradient-to-r from-violet-500 to-pink-500 hover:from-violet-600 hover:to-pink-600 text-white shadow-lg"
@@ -546,7 +569,7 @@ export function AnomalyDetection({
             <div className="grid gap-4 md:grid-cols-4">
               <div className="bg-white rounded-lg border border-purple-200 p-4 text-center">
                 <div className="text-2xl font-bold text-purple-700">
-                  {combinedResults.anomaly_rate}%
+                  {typeof combinedResults.anomaly_rate === 'number' ? combinedResults.anomaly_rate.toFixed(2) : combinedResults.anomaly_rate}%
                 </div>
                 <div className="text-sm text-purple-600">Anomaly Rate</div>
               </div>
@@ -621,13 +644,13 @@ export function AnomalyDetection({
                               </CardTitle>
                               {tableResult && (
                                 <p className="text-sm text-purple-600 mt-1">
-                                  {tableResult.total_records?.toLocaleString() || 0} rows • 
-                                  {tableResult.numeric_columns?.length || 0} numeric columns • 
+                                  {tableResult.total_observations?.toLocaleString() || 0} rows • 
+                                  {tableResult.numeric_columns || 0} numeric columns • 
                                   <span className={`ml-1 ${
-                                    tableResult.anomalies_count > 10 ? 'text-red-600' :
-                                    tableResult.anomalies_count > 5 ? 'text-yellow-600' : 'text-green-600'
+                                    (tableResult.anomalies_detected || 0) > 10 ? 'text-red-600' :
+                                    (tableResult.anomalies_detected || 0) > 5 ? 'text-yellow-600' : 'text-green-600'
                                   }`}>
-                                    {tableResult.anomalies_count || 0} anomalies found
+                                    {tableResult.anomalies_detected || 0} anomalies found
                                   </span>
                                 </p>
                               )}
@@ -636,7 +659,7 @@ export function AnomalyDetection({
                           <div className="flex items-center gap-2">
                             {tableResult && (
                               <Badge variant="outline" className="border-purple-300 text-purple-700 bg-white">
-                                {tableResult.anomalies_count || 0} anomalies
+                                {tableResult.anomalies_detected || 0} anomalies
                               </Badge>
                             )}
                             <div className={`transform transition-transform ${selectedTableForView === tableName ? 'rotate-180' : ''}`}>
@@ -648,40 +671,194 @@ export function AnomalyDetection({
                       
                       {/* Expanded Table Details */}
                       {selectedTableForView === tableName && tableResult && (
-                        <CardContent className="pt-0">
+                        <CardContent className="pt-0" onClick={(e) => e.stopPropagation()}>
                           <div className="space-y-4">
                             <div className="bg-white rounded border border-purple-200 p-4">
                               <h4 className="font-semibold text-purple-800 mb-3">Detected Anomalies</h4>
-                              {tableResult.anomalies && tableResult.anomalies.length > 0 ? (
-                                <div className="space-y-2 max-h-48 overflow-y-auto">
-                                  {tableResult.anomalies.map((anomaly: any, index: number) => (
-                                    <div key={index} className="flex items-center justify-between p-2 bg-purple-50 rounded border border-purple-200">
-                                      <div className="flex-1">
-                                        <span className="font-medium text-purple-800">Row {anomaly.row_index}</span>
-                                        <span className="text-xs text-purple-600 ml-2">
-                                          Columns: {anomaly.components_affected?.join(', ')}
-                                        </span>
-                                      </div>
-                                      <div className="text-right">
-                                        <div className={`text-sm font-medium ${
-                                          anomaly.severity === 'high' ? 'text-red-600' :
-                                          anomaly.severity === 'medium' ? 'text-yellow-600' : 'text-green-600'
-                                        }`}>
-                                          Score: {anomaly.anomaly_score?.toFixed(2)}
+                              {tableResult && tableResult.anomaly_indices && tableResult.anomaly_indices.length > 0 ? (
+                                <div className="space-y-2 max-h-96 overflow-y-auto">
+                                  {tableResult.anomaly_indices.map((index: number, i: number) => (
+                                    <div key={i} className="border border-purple-200 rounded-lg bg-purple-50">
+                                      {/* Anomaly Header */}
+                                      <div className="flex items-center justify-between p-3">
+                                        <div className="flex-1">
+                                          <span className="font-medium text-purple-800">Row {index}</span>
+                                          <span className="text-xs text-purple-600 ml-2">
+                                            Columns: {tableResult.columns_analyzed?.join(', ') || 'Multiple columns'}
+                                          </span>
                                         </div>
-                                        <Badge className={`text-xs ${
-                                          anomaly.severity === 'high' ? 'bg-red-100 text-red-700' :
-                                          anomaly.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
-                                        }`}>
-                                          {anomaly.severity}
-                                        </Badge>
+                                        <div className="flex items-center gap-2">
+                                          <div className="text-right">
+                                            <div className="text-sm font-medium text-red-600">
+                                              VARIMA Anomaly
+                                            </div>
+                                            <Badge className="text-xs bg-red-100 text-red-700">
+                                              high
+                                            </Badge>
+                                          </div>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => startEditingAnomalyRow(tableName, index)}
+                                            disabled={editingAnomaly === index}
+                                            className="border-purple-300 hover:bg-purple-100 text-purple-700"
+                                          >
+                                            <Edit className="h-4 w-4" />
+                                          </Button>
+                                        </div>
                                       </div>
+
+                                      {/* Editable Row Data */}
+                                      {editingAnomaly === index && editingAnomalyData && Object.keys(editingAnomalyData).length > 0 && (
+                                        <div className="border-t border-purple-200 bg-white p-4">
+                                          <h5 className="font-semibold text-purple-800 mb-3">Edit Row {index} Values</h5>
+                                          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3 max-h-64 overflow-y-auto">
+                                            {Object.entries(editingAnomalyData).map(([column, value]) => {
+                                              // Skip non-editable columns like IDs
+                                              if (column.toLowerCase().includes('id') && typeof value === 'number') {
+                                                return (
+                                                  <div key={column} className="space-y-1">
+                                                    <Label className="text-sm font-medium text-gray-600">
+                                                      {column} (read-only)
+                                                    </Label>
+                                                    <Input
+                                                      value={String(value)}
+                                                      disabled
+                                                      className="bg-gray-50 text-gray-500"
+                                                    />
+                                                  </div>
+                                                )
+                                              }
+
+                                              return (
+                                                <div key={column} className="space-y-1">
+                                                  <Label className="text-sm font-medium text-purple-700">
+                                                    {column}
+                                                    {tableResult.columns_analyzed?.includes(column) && (
+                                                      <Badge className="ml-1 text-xs bg-red-100 text-red-600">
+                                                        anomalous
+                                                      </Badge>
+                                                    )}
+                                                  </Label>
+                                                  <Input
+                                                    type={typeof value === 'number' ? 'number' : 'text'}
+                                                    value={String(value)}
+                                                    onChange={(e) => {
+                                                      const newValue = typeof value === 'number' 
+                                                        ? parseFloat(e.target.value) || 0
+                                                        : e.target.value
+                                                      setEditingAnomalyData(prev => ({
+                                                        ...prev,
+                                                        [column]: newValue
+                                                      }))
+                                                    }}
+                                                    className={`border-purple-200 focus:border-purple-400 ${
+                                                      tableResult.columns_analyzed?.includes(column) 
+                                                        ? 'bg-red-50 border-red-300' 
+                                                        : ''
+                                                    }`}
+                                                  />
+                                                </div>
+                                              )
+                                            })}
+                                          </div>
+                                          
+                                          {/* Edit Actions */}
+                                          <div className="flex items-center gap-3 mt-4 pt-3 border-t border-purple-200">
+                                            <Button
+                                              onClick={() => saveAnomalyEdit(tableName, index, editingAnomalyData)}
+                                              disabled={savingEdit}
+                                              className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+                                            >
+                                              {savingEdit ? (
+                                                <>
+                                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                  Saving...
+                                                </>
+                                              ) : (
+                                                <>
+                                                  <Save className="mr-2 h-4 w-4" />
+                                                  Save Changes
+                                                </>
+                                              )}
+                                            </Button>
+                                            <Button
+                                              onClick={cancelAnomalyEdit}
+                                              variant="outline"
+                                              disabled={savingEdit}
+                                              className="border-gray-300 hover:bg-gray-50"
+                                            >
+                                              Cancel
+                                            </Button>
+                                            <div className="text-xs text-gray-500 ml-auto">
+                                              * Red highlighted fields were flagged as anomalous
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
                                     </div>
                                   ))}
                                 </div>
                               ) : (
                                 <div className="text-center py-4 text-gray-500">
                                   No anomalies detected in this table
+                                </div>
+                              )}
+                              
+                              {/* VARIMA Summary */}
+                              {tableResult && (
+                                <div className="mt-4 pt-4 border-t border-purple-200">
+                                  <div className="grid grid-cols-2 gap-4 text-sm">
+                                    <div>
+                                      <span className="text-purple-600">Anomaly Rate:</span>
+                                      <span className="font-semibold ml-1 text-purple-800">
+                                        {tableResult.anomaly_percentage?.toFixed(2) || '0.00'}%
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-purple-600">Total Records:</span>
+                                      <span className="font-semibold ml-1 text-purple-800">
+                                        {tableResult.total_observations?.toLocaleString() || 0}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-purple-600">Anomalies Found:</span>
+                                      <span className="font-semibold ml-1 text-purple-800">
+                                        {tableResult.anomalies_detected || 0}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-purple-600">Numeric Columns:</span>
+                                      <span className="font-semibold ml-1 text-purple-800">
+                                        {tableResult.numeric_columns || 0}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Analyzed Columns */}
+                                  {tableResult.columns_analyzed && tableResult.columns_analyzed.length > 0 && (
+                                    <div className="mt-3">
+                                      <span className="text-sm text-purple-600">Analyzed columns:</span>
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {tableResult.columns_analyzed.map((col: string) => (
+                                          <Badge 
+                                            key={col} 
+                                            variant="outline" 
+                                            className="text-xs border-purple-300 text-purple-700 bg-purple-50"
+                                          >
+                                            {col}
+                                          </Badge>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Timestamp */}
+                                  {tableResult.timestamp && (
+                                    <div className="mt-2 text-xs text-purple-500">
+                                      Analysis completed: {new Date(tableResult.timestamp).toLocaleString()}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -796,7 +973,7 @@ export function AnomalyDetection({
                     </div>
                     <div className="text-center">
                       <div className="text-2xl font-bold text-pink-600">
-                        {((varimaResults.anomalies_detected / varimaResults.total_records) * 100).toFixed(1)}%
+                        {((varimaResults.anomalies_detected / varimaResults.total_records) * 100).toFixed(2)}%
                       </div>
                       <div className="text-sm text-gray-600">Anomaly Rate</div>
                     </div>
@@ -813,11 +990,165 @@ export function AnomalyDetection({
                     <AlertTriangle className="h-5 w-5 text-white" />
                   </div>
                   Detected Anomalies
+                  {combinedResults && (
+                    <Badge className="bg-gradient-to-r from-red-500 to-pink-500 text-white ml-2">
+                      {combinedResults.total_anomalies} found
+                    </Badge>
+                  )}
                 </CardTitle>
-                <CardDescription>Review, edit, and validate anomalous data points</CardDescription>
+                <CardDescription>
+                  Review, edit, and validate anomalous data points • Click edit to modify row values
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
+                  {/* Add dynamic anomalies from VARIMA results */}
+                  {combinedResults && tableResults && Object.keys(tableResults).length > 0 && (
+                    <>
+                      {Object.entries(tableResults).map(([tableName, tableResult]: [string, any]) => {
+                        if (!tableResult.anomaly_indices || tableResult.anomaly_indices.length === 0) return null
+                        
+                        return tableResult.anomaly_indices.slice(0, 5).map((index: number, i: number) => {
+                          const anomalyId = `${tableName}-${index}`
+                          return (
+                            <div
+                              key={anomalyId}
+                              className="border border-violet-100 rounded-xl p-6 bg-gradient-to-r from-white to-violet-50 hover:shadow-md transition-all duration-300"
+                            >
+                              <div className="flex items-center justify-between mb-4">
+                                <div className="flex items-center gap-3">
+                                  <div className="p-2 bg-gradient-to-r from-violet-500 to-purple-500 rounded-lg">
+                                    <Zap className="h-4 w-4 text-white" />
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="outline" className="border-violet-200">
+                                      VARIMA
+                                    </Badge>
+                                    <Badge className="bg-gradient-to-r from-red-500 to-pink-500 text-white">
+                                      high
+                                    </Badge>
+                                    <Badge variant="outline" className="border-green-200 text-green-700">
+                                      95% confidence
+                                    </Badge>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => startEditingAnomalyRow(tableName, index)}
+                                    className="border-violet-200 hover:bg-violet-50"
+                                  >
+                                    <Edit className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="grid gap-4 md:grid-cols-3 mb-4">
+                                <div>
+                                  <Label className="text-sm font-semibold text-gray-700">Table</Label>
+                                  <p className="text-sm text-gray-600 mt-1">{tableName}</p>
+                                </div>
+                                <div>
+                                  <Label className="text-sm font-semibold text-gray-700">Row Index</Label>
+                                  <p className="text-sm text-gray-600 mt-1 font-mono bg-gray-100 px-2 py-1 rounded">
+                                    {index}
+                                  </p>
+                                </div>
+                                <div>
+                                  <Label className="text-sm font-semibold text-gray-700">Affected Columns</Label>
+                                  <p className="text-sm text-violet-600 font-bold mt-1">
+                                    {tableResult.columns_analyzed?.length || 0} columns
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="bg-white/50 p-3 rounded-lg">
+                                <p className="text-sm text-gray-700">
+                                  Multivariate anomaly detected in {tableName} at row {index}. 
+                                  Affected columns: {tableResult.columns_analyzed?.join(', ') || 'Multiple columns'}
+                                </p>
+                              </div>
+
+                              {/* Editing Panel for this specific anomaly */}
+                              {editingAnomaly === index && editingAnomalyData && Object.keys(editingAnomalyData).length > 0 && (
+                                <div className="mt-4 border-t border-violet-200 pt-4">
+                                  <div className="bg-white rounded-lg border border-violet-200 p-4">
+                                    <h5 className="font-semibold text-violet-800 mb-3">
+                                      Edit Row {index} in {tableName}
+                                    </h5>
+                                    <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3 max-h-64 overflow-y-auto">
+                                      {Object.entries(editingAnomalyData).slice(0, 12).map(([column, value]) => (
+                                        <div key={column} className="space-y-1">
+                                          <Label className="text-sm font-medium text-violet-700">
+                                            {column}
+                                            {tableResult.columns_analyzed?.includes(column) && (
+                                              <Badge className="ml-1 text-xs bg-red-100 text-red-600">
+                                                anomalous
+                                              </Badge>
+                                            )}
+                                          </Label>
+                                          <Input
+                                            type={typeof value === 'number' ? 'number' : 'text'}
+                                            value={String(value)}
+                                            onChange={(e) => {
+                                              const newValue = typeof value === 'number' 
+                                                ? parseFloat(e.target.value) || 0
+                                                : e.target.value
+                                              setEditingAnomalyData(prev => ({
+                                                ...prev,
+                                                [column]: newValue
+                                              }))
+                                            }}
+                                            className={`border-violet-200 focus:border-violet-400 ${
+                                              tableResult.columns_analyzed?.includes(column) 
+                                                ? 'bg-red-50 border-red-300' 
+                                                : ''
+                                            }`}
+                                          />
+                                        </div>
+                                      ))}
+                                    </div>
+                                    
+                                    <div className="flex items-center gap-3 mt-4 pt-3 border-t border-violet-200">
+                                      <Button
+                                        onClick={() => saveAnomalyEdit(tableName, index, editingAnomalyData)}
+                                        disabled={savingEdit}
+                                        className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+                                      >
+                                        {savingEdit ? (
+                                          <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            Saving...
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Save className="mr-2 h-4 w-4" />
+                                            Save Changes
+                                          </>
+                                        )}
+                                      </Button>
+                                      <Button
+                                        onClick={cancelAnomalyEdit}
+                                        variant="outline"
+                                        disabled={savingEdit}
+                                        className="border-gray-300 hover:bg-gray-50"
+                                      >
+                                        <X className="mr-2 h-4 w-4" />
+                                        Cancel
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })
+                      })}
+                    </>
+                  )}
+
+                  {/* Original static anomalies */}
                   {anomalies.map((anomaly) => (
                     <div
                       key={anomaly.id}

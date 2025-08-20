@@ -79,7 +79,6 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   const canProceed = isStepCompleted || currentStep === 0
 
   const handleStepComplete = useCallback((data: any) => {
-    console.log('Step completed with data:', { step: currentStep, data })
     setStepData((prev: any) => ({ ...prev, [currentStep]: data }))
     if (!completedSteps.includes(currentStep)) {
       setCompletedSteps((prev) => [...prev, currentStep])
@@ -87,7 +86,6 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
   }, [currentStep, completedSteps])
 
   const handleDataConnected = useCallback((data: any) => {
-    console.log('Data connected in guided flow:', data)
     
     // Update connections state
     if (data.connections) {
@@ -279,7 +277,7 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
                 </div>
                 <div>
                   <h1 className="text-lg font-bold text-gray-900">Guided Setup</h1>
-                  <p className="text-sm text-gray-500">Power BI Dashboard Configuration</p>
+                  <p className="text-sm text-gray-500">Data Quality Agent</p>
                 </div>
               </div>
             </div>
@@ -291,7 +289,7 @@ export function GuidedFlow({ onBack, onNavigateTo, canGoBack, userData, onComple
 
               {connections.length > 0 && (
                 <Badge variant="outline" className="border-green-300 text-green-700">
-                  {connections.length} Connection{connections.length > 1 ? 's' : ''} Active
+                  1 Connection Active
                 </Badge>
               )}
             </div>

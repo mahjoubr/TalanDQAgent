@@ -1,12 +1,14 @@
 """
 API routes for the Data Quality Pipeline
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Header, Query
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
 import json
 import uuid
 from datetime import datetime
+import pandas as pd
+import numpy as np
 
 from models import (
     DatabaseConnection, PowerBIAuth, DbStoreRequest, PowerBIEmbedRequest,
@@ -26,7 +28,7 @@ from export import (
 )
 from file_utils import (
     process_uploaded_file, get_file_sample, get_analyzed_file_sample,
-    cleanup_file_connection
+    cleanup_file_connection, update_file_row
 )
 from powerbi_service import PowerBIService
 from redis_client import redis_client
@@ -235,12 +237,11 @@ async def delete_db_connection(email: str, connection_id: str):
 
 
 @router.get("/api/connections/{connection_id}/sample")
-async def get_sample_data(connection_id: str, limit: int = Query(100, ge=1, le=1000)):
+async def get_sample_data(connection_id: str, limit: int = Query(100, ge=1, le=1000), table_name: str = Query(None)):
     """Get sample data from connection"""
     connection_info = get_connection_info(connection_id)
     
     if connection_info["type"] == "database":
-        # Return database sample logic here
         from sqlalchemy import inspect
         from database import get_database_engine
         
@@ -248,20 +249,51 @@ async def get_sample_data(connection_id: str, limit: int = Query(100, ge=1, le=1
         inspector = inspect(engine)
         tables = inspector.get_table_names()
         
-        sample_data = {}
-        for table_name in tables[:3]:  # Limit to first 3 tables
+        if table_name:
+            # Return sample data for specific table
+            if table_name not in tables:
+                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+            
             try:
-                df = get_table_data(connection_id, table_name, limit=10)
-                sample_data[table_name] = df.head(5).to_dict('records')
-            except:
-                sample_data[table_name] = {"error": "Could not retrieve sample"}
-        
-        return {
-            "connection_id": connection_id,
-            "type": "database",
-            "tables": tables,
-            "sample_data": sample_data
-        }
+                df = get_table_data(connection_id, table_name, limit=limit)
+                sample_data = df.head(limit).to_dict('records')
+                
+                # Clean sample data for JSON serialization
+                for row in sample_data:
+                    for key, value in row.items():
+                        if pd.isna(value):
+                            row[key] = None
+                        elif isinstance(value, (np.int64, np.int32)):
+                            row[key] = int(value)
+                        elif isinstance(value, (np.float64, np.float32)):
+                            row[key] = float(value)
+                
+                return {
+                    "connection_id": connection_id,
+                    "table_name": table_name,
+                    "total_rows": len(df),
+                    "sample_rows": len(sample_data),
+                    "columns": df.columns.tolist(),
+                    "sample_data": sample_data
+                }
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to get sample data for table {table_name}: {str(e)}")
+        else:
+            # Return sample data for all tables (legacy behavior)
+            sample_data = {}
+            for table_name in tables[:3]:  # Limit to first 3 tables
+                try:
+                    df = get_table_data(connection_id, table_name, limit=10)
+                    sample_data[table_name] = df.head(5).to_dict('records')
+                except:
+                    sample_data[table_name] = {"error": "Could not retrieve sample"}
+            
+            return {
+                "connection_id": connection_id,
+                "type": "database",
+                "tables": tables,
+                "sample_data": sample_data
+            }
     
     elif connection_info["type"] == "file":
         return get_file_sample(connection_id, limit)
@@ -586,3 +618,309 @@ async def export_statistics(request: dict):
         raise HTTPException(status_code=400, detail="Connection ID required")
     
     return export_statistics_csv(connection_id)
+
+
+@router.put("/api/connections/{connection_id}/update-row")
+async def update_row_data(connection_id: str, request: dict):
+    """Update a specific row in the dataset"""
+    try:
+        row_index = request.get("row_index")
+        updated_data = request.get("updated_data")
+        
+        if row_index is None or updated_data is None:
+            raise HTTPException(status_code=400, detail="row_index and updated_data are required")
+        
+        connection_info = get_connection_info(connection_id)
+        
+        if connection_info["type"] == "file":
+            # Update file data
+            result = update_file_row(connection_id, row_index, updated_data)
+            return result
+        else:
+            raise HTTPException(status_code=400, detail="Row updates only supported for file connections currently")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update row: {str(e)}")
+
+
+# Data Cleaning Endpoints
+@router.post("/api/data-cleaning/preview-options")
+async def get_cleaning_options(request: Request):
+    """Get available cleaning options for a dataset"""
+    try:
+        request_data = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+        
+    connection_id = request_data.get("connection_id")
+    table_name = request_data.get("table_name")  # Optional for database connections
+    
+    if not connection_id:
+        raise HTTPException(status_code=400, detail="Connection ID required")
+    
+    try:
+        from data_cleaner import DataCleaner
+        import os
+        
+        # Get data sample based on connection type
+        connection_info = get_connection_info(connection_id)
+        
+        if connection_info["type"] == "file":
+            import pandas as pd
+            file_path = connection_info.get("file_path")
+            if not file_path or not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="File not found")
+            df = pd.read_csv(file_path)
+        else:
+            # For database connections, get first table if no table specified
+            if not table_name:
+                tables = get_table_list(connection_id)
+                if not tables:
+                    raise HTTPException(status_code=404, detail="No tables found")
+                table_name = tables[0]
+            
+            df = get_table_data(connection_id, table_name)
+        
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail="No data found")
+        
+        # Analyze data for cleaning recommendations
+        cleaner = DataCleaner(df)
+        
+        # Get data info
+        numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_columns = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        datetime_columns = df.select_dtypes(include=['datetime']).columns.tolist()
+        
+        # Calculate statistics
+        null_counts = df.isnull().sum()
+        null_percentages = (df.isnull().sum() / len(df) * 100).round(2)
+        duplicate_count = df.duplicated().sum()
+        
+        # Outlier detection preview (for numeric columns)
+        outlier_info = {}
+        for col in numeric_columns[:5]:  # Limit to first 5 numeric columns for preview
+            Q1 = df[col].quantile(0.25)
+            Q3 = df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            outliers = ((df[col] < (Q1 - 1.5 * IQR)) | (df[col] > (Q3 + 1.5 * IQR))).sum()
+            outlier_info[col] = outliers
+        
+        return {
+            "success": True,
+            "data": {
+                "dataset_info": {
+                    "shape": df.shape,
+                    "columns": {
+                        "numeric": numeric_columns,
+                        "categorical": categorical_columns,
+                        "datetime": datetime_columns,
+                        "all_columns": df.columns.tolist()
+                    },
+                    "data_types": {col: str(dtype) for col, dtype in df.dtypes.items()}
+                },
+                "data_quality": {
+                    "null_values": {
+                        "counts": null_counts.to_dict(),
+                        "percentages": null_percentages.to_dict(),
+                        "columns_with_nulls": null_counts[null_counts > 0].index.tolist()
+                    },
+                    "duplicates": {
+                        "count": int(duplicate_count),
+                        "percentage": round(duplicate_count / len(df) * 100, 2)
+                    },
+                    "outliers_preview": outlier_info
+                },
+                "cleaning_options": {
+                    "drop_nulls": {
+                        "available": True,
+                        "methods": ["any", "all", "threshold"],
+                        "recommendation": "threshold" if null_counts.sum() > 0 else None
+                    },
+                    "drop_duplicates": {
+                        "available": True,
+                        "recommendation": duplicate_count > 0
+                    },
+                    "fill_missing": {
+                        "available": True,
+                        "methods": {
+                            "numeric": ["mean", "median", "interpolate", "constant"],
+                            "categorical": ["mode", "constant", "forward_fill", "backward_fill"]
+                        },
+                        "applicable_columns": {
+                            "numeric": [col for col in numeric_columns if null_counts[col] > 0],
+                            "categorical": [col for col in categorical_columns if null_counts[col] > 0]
+                        }
+                    },
+                    "remove_outliers": {
+                        "available": len(numeric_columns) > 0,
+                        "methods": ["iqr", "zscore"],
+                        "applicable_columns": numeric_columns,
+                        "outlier_counts": outlier_info
+                    },
+                    "standardize": {
+                        "available": len(numeric_columns) > 0,
+                        "methods": ["zscore", "minmax"],
+                        "applicable_columns": numeric_columns
+                    },
+                    "convert_types": {
+                        "available": True,
+                        "suggestions": get_type_conversion_suggestions(df)
+                    }
+                }
+            }
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to analyze data: {str(e)}")
+
+
+@router.post("/api/data-cleaning/clean-data")
+async def clean_data_endpoint(request: Request):
+    """Clean data based on selected options"""
+    try:
+        request_data = await request.json()
+        print(f"Received request data: {request_data}")  # Debug log
+    except Exception as e:
+        print(f"JSON parsing error: {e}")  # Debug log
+        raise HTTPException(status_code=400, detail=f"Invalid JSON in request body: {str(e)}")
+        
+    connection_id = request_data.get("connection_id")
+    table_name = request_data.get("table_name")  # Optional for database connections
+    cleaning_options = request_data.get("cleaning_options", {})
+    
+    if not connection_id:
+        raise HTTPException(status_code=400, detail="Connection ID required")
+    
+    try:
+        from data_cleaner import DataCleaner
+        import tempfile
+        import os
+        import time
+        
+        # Get data based on connection type
+        connection_info = get_connection_info(connection_id)
+        
+        if connection_info["type"] == "file":
+            import pandas as pd
+            file_path = connection_info.get("file_path")
+            if not file_path or not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="File not found")
+            df = pd.read_csv(file_path)
+        else:
+            # For database connections, get first table if no table specified
+            if not table_name:
+                tables = get_table_list(connection_id)
+                if not tables:
+                    raise HTTPException(status_code=404, detail="No tables found")
+                table_name = tables[0]
+            
+            df = get_table_data(connection_id, table_name)
+        
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail="No data found")
+        
+        # Use DataCleaner class
+        cleaner = DataCleaner(df)
+        
+        # Apply cleaning options
+        if cleaning_options.get("drop_nulls", False):
+            cleaner.drop_null_values()
+        
+        if cleaning_options.get("drop_duplicates", False):
+            cleaner.drop_duplicates()
+            
+        if cleaning_options.get("fill_missing", False):
+            fill_method = cleaning_options.get("fill_method", "mean")
+            cleaner.fill_missing_values(method=fill_method)
+        
+        # Export cleaned data
+        filename = f"cleaned_data_{connection_id}_{int(time.time())}.csv"
+        export_path = cleaner.export_to_csv(filename)
+        
+        # Get basic stats without complex objects
+        original_shape = cleaner.stats["original_shape"]
+        final_shape = cleaner.df.shape
+        
+        # Create a simple, JSON-safe response
+        return {
+            "success": True,
+            "message": "Data cleaned successfully",
+            "filename": filename,
+            "data": {
+                "original_shape": [int(original_shape[0]), int(original_shape[1])],
+                "final_shape": [int(final_shape[0]), int(final_shape[1])],
+                "original_nulls": int(cleaner.stats["original_nulls"]),
+                "original_duplicates": int(cleaner.stats["original_duplicates"]),
+                "final_nulls": int(cleaner.df.isnull().sum().sum()),
+                "final_duplicates": int(cleaner.df.duplicated().sum()),
+                "rows_removed": int(original_shape[0] - final_shape[0]),
+                "cleaning_operations": len(cleaner.cleaning_log)
+            }
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clean data: {str(e)}")
+
+
+@router.get("/api/data-cleaning/download/{filename}")
+async def download_cleaned_data(filename: str):
+    """Download cleaned data file"""
+    try:
+        import tempfile
+        import os
+        from fastapi.responses import FileResponse
+        
+        file_path = os.path.join(tempfile.gettempdir(), filename)
+        
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type='text/csv'
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
+
+
+def get_type_conversion_suggestions(df):
+    """Get suggestions for data type conversions"""
+    suggestions = {}
+    
+    for col in df.columns:
+        current_type = str(df[col].dtype)
+        
+        # Check if object column can be converted to numeric
+        if current_type == 'object':
+            try:
+                pd.to_numeric(df[col].dropna().head(100), errors='raise')
+                suggestions[col] = {
+                    'current': current_type,
+                    'suggested': 'numeric',
+                    'reason': 'Column contains numeric values stored as text'
+                }
+            except:
+                # Check if it could be datetime
+                try:
+                    pd.to_datetime(df[col].dropna().head(100), errors='raise')
+                    suggestions[col] = {
+                        'current': current_type,
+                        'suggested': 'datetime',
+                        'reason': 'Column contains date/time values'
+                    }
+                except:
+                    # Check if it should be category
+                    unique_ratio = df[col].nunique() / len(df)
+                    if unique_ratio < 0.05:  # Less than 5% unique values
+                        suggestions[col] = {
+                            'current': current_type,
+                            'suggested': 'category',
+                            'reason': 'Low cardinality, suitable for categorical type'
+                        }
+    
+    return suggestions

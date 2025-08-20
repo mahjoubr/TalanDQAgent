@@ -38,6 +38,8 @@ export function DataQualityEngine({
   const [analyzedTables, setAnalyzedTables] = useState<string[]>([])
   const [tableResults, setTableResults] = useState<Record<string, any>>({})
   const [selectedTableForView, setSelectedTableForView] = useState<string>("")
+  const [tableSampleData, setTableSampleData] = useState<Record<string, any>>({})
+  const [loadingSampleData, setLoadingSampleData] = useState<Record<string, boolean>>({})
   const [metrics, setMetrics] = useState({
     completeness: 0,
     uniqueness: 0,
@@ -166,6 +168,68 @@ export function DataQualityEngine({
     return null
   }
 
+  // Fetch sample data for a specific table
+  const fetchTableSampleData = async (tableName: string) => {
+    const connection = getActiveConnection()
+    if (!connection?.id) return
+
+    setLoadingSampleData(prev => ({ ...prev, [tableName]: true }))
+    
+    try {
+      // Try to get table-specific sample data (for database connections, pass table name)
+      const response = await apiClient.getConnectionSample(connection.id, 50, tableName)
+      
+      if (response.success && response.data) {
+        // Handle the actual backend response format
+        if (response.data.sample_data && response.data.columns) {
+          setTableSampleData(prev => ({
+            ...prev,
+            [tableName]: {
+              table_name: tableName,
+              preview_data: response.data!.sample_data,
+              columns: response.data!.columns,
+              data_types: {},  // Backend doesn't provide data types in this endpoint
+              total_rows: response.data!.total_rows || 0,
+              preview_rows: response.data!.sample_rows || 0
+            }
+          }))
+        }
+      } else {
+        // If sample fails, try to get cached analysis results and extract sample data
+        const cachedResponse = await apiClient.getCachedAnalysisResults(connection.id)
+        
+        if (cachedResponse.success && cachedResponse.data?.table_results?.[tableName]) {
+          const tableData = cachedResponse.data.table_results[tableName]
+          if (tableData.table_stats?.sample_data) {
+            setTableSampleData(prev => ({
+              ...prev,
+              [tableName]: {
+                table_name: tableName,
+                preview_data: tableData.table_stats.sample_data,
+                columns: tableData.table_stats.columns?.map((col: any) => col.name) || [],
+                data_types: tableData.table_stats.columns?.reduce((acc: any, col: any) => {
+                  acc[col.name] = col.data_type
+                  return acc
+                }, {}) || {},
+                total_rows: tableData.table_stats.row_count || 0,
+                preview_rows: tableData.table_stats.sample_data?.length || 0
+              }
+            }))
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch sample data for table:', tableName, error)
+      toast({
+        title: "Failed to Load Sample Data",
+        description: `Unable to load sample data for table ${tableName}`,
+        variant: "destructive",
+      })
+    } finally {
+      setLoadingSampleData(prev => ({ ...prev, [tableName]: false }))
+    }
+  }
+
   const activeConnection = getActiveConnection()
 
   // Auto-load cached results when connection becomes available - CONSERVATIVE APPROACH
@@ -218,7 +282,7 @@ export function DataQualityEngine({
                   score: score,
                   issues: issues,
                   recommendations: recommendations,
-                  trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+                  trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(2)}%` : `-${(Math.random() * 2).toFixed(2)}%`,
                 }
               }
             })
@@ -232,7 +296,7 @@ export function DataQualityEngine({
                 score: score,
                 issues: generateIssues(key, score),
                 recommendations: generateRecommendations(key, score),
-                trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+                trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(2)}%` : `-${(Math.random() * 2).toFixed(2)}%`,
               }
             })
             setDetailedResults(generatedResults)
@@ -292,6 +356,8 @@ export function DataQualityEngine({
       setHasRunAnalysis(false)
       setAnalyzedTables([])
       setTableResults({})
+      setTableSampleData({})
+      setLoadingSampleData({})
       setMetrics({
         completeness: 0,
         uniqueness: 0,
@@ -439,7 +505,7 @@ export function DataQualityEngine({
               score: analysis.score || 0,
               issues: analysis.issues || [],
               recommendations: analysis.recommendations || [],
-              trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+              trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(2)}%` : `-${(Math.random() * 2).toFixed(2)}%`,
             }
           })
           
@@ -478,7 +544,7 @@ export function DataQualityEngine({
                 score: score,
                 issues: analysis.issues?.length > 0 ? analysis.issues : generateIssues(key, score),
                 recommendations: analysis.recommendations?.length > 0 ? analysis.recommendations : generateRecommendations(key, score),
-                trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(1)}%` : `-${(Math.random() * 2).toFixed(1)}%`,
+                trend: Math.random() > 0.5 ? `+${(Math.random() * 3).toFixed(2)}%` : `-${(Math.random() * 2).toFixed(2)}%`,
               }
             }
           })
@@ -633,7 +699,7 @@ export function DataQualityEngine({
                                   {tableResult.total_rows?.toLocaleString() || 0} rows • {tableResult.total_columns || 0} columns
                                   {tableResult.quality_score && (
                                     <span className="ml-2">
-                                      • Quality Score: {Math.round(tableResult.quality_score)}%
+                                      • Quality Score: {tableResult.quality_score.toFixed(2)}%
                                     </span>
                                   )}
                                 </p>
@@ -655,8 +721,13 @@ export function DataQualityEngine({
                       
                       {/* Expanded Table Details */}
                       {selectedTableForView === tableName && tableResult && (
-                        <CardContent className="pt-0">
-                          <Tabs defaultValue="metrics" className="w-full">
+                        <CardContent className="pt-0" onClick={(e) => e.stopPropagation()}>
+                          <Tabs defaultValue="metrics" className="w-full" onValueChange={(value) => {
+                            // Auto-fetch sample data when the sample tab is selected
+                            if (value === "sample" && !tableSampleData[tableName] && !loadingSampleData[tableName]) {
+                              fetchTableSampleData(tableName)
+                            }
+                          }}>
                             <TabsList className="grid w-full grid-cols-3 bg-green-100">
                               <TabsTrigger value="metrics" className="data-[state=active]:bg-white">
                                 Quality Metrics
@@ -676,7 +747,7 @@ export function DataQualityEngine({
                                   <div className="bg-white rounded border border-green-200 p-3 text-center">
                                     <div className="text-xs text-green-700 capitalize font-medium mb-1">completeness</div>
                                     <div className={`text-lg font-bold ${getScoreColor(tableResult.completeness || 0)}`}>
-                                      {Math.round(tableResult.completeness || 0)}%
+                                      {(tableResult.completeness || 0).toFixed(2)}%
                                     </div>
                                     <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
                                       <div
@@ -688,7 +759,7 @@ export function DataQualityEngine({
                                   <div className="bg-white rounded border border-green-200 p-3 text-center">
                                     <div className="text-xs text-green-700 capitalize font-medium mb-1">uniqueness</div>
                                     <div className={`text-lg font-bold ${getScoreColor(tableResult.uniqueness || 0)}`}>
-                                      {Math.round(tableResult.uniqueness || 0)}%
+                                      {(tableResult.uniqueness || 0).toFixed(2)}%
                                     </div>
                                     <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
                                       <div
@@ -700,7 +771,7 @@ export function DataQualityEngine({
                                   <div className="bg-white rounded border border-green-200 p-3 text-center">
                                     <div className="text-xs text-green-700 capitalize font-medium mb-1">validity</div>
                                     <div className={`text-lg font-bold ${getScoreColor(tableResult.validity || 0)}`}>
-                                      {Math.round(tableResult.validity || 0)}%
+                                      {(tableResult.validity || 0).toFixed(2)}%
                                     </div>
                                     <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
                                       <div
@@ -712,7 +783,7 @@ export function DataQualityEngine({
                                   <div className="bg-white rounded border border-green-200 p-3 text-center">
                                     <div className="text-xs text-green-700 capitalize font-medium mb-1">consistency</div>
                                     <div className={`text-lg font-bold ${getScoreColor(tableResult.consistency || 0)}`}>
-                                      {Math.round(tableResult.consistency || 0)}%
+                                      {(tableResult.consistency || 0).toFixed(2)}%
                                     </div>
                                     <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
                                       <div
@@ -724,7 +795,7 @@ export function DataQualityEngine({
                                   <div className="bg-white rounded border border-green-200 p-3 text-center">
                                     <div className="text-xs text-green-700 capitalize font-medium mb-1">accuracy</div>
                                     <div className={`text-lg font-bold ${getScoreColor(tableResult.accuracy || 0)}`}>
-                                      {Math.round(tableResult.accuracy || 0)}%
+                                      {(tableResult.accuracy || 0).toFixed(2)}%
                                     </div>
                                     <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
                                       <div
@@ -757,7 +828,7 @@ export function DataQualityEngine({
                                           }
                                         </div>
                                         <div className="text-xs text-gray-500 mt-1">
-                                          Quality: {Math.round((columnData.completeness + columnData.uniqueness + columnData.consistency) / 3)}%
+                                          Quality: {((columnData.completeness + columnData.uniqueness + columnData.consistency) / 3).toFixed(2)}%
                                         </div>
                                       </div>
                                     </div>
@@ -767,18 +838,96 @@ export function DataQualityEngine({
                             </TabsContent>
                             
                             <TabsContent value="sample" className="mt-4">
-                              <div className="text-center py-8 text-gray-500">
-                                <div className="mb-4">
-                                  <Database className="h-12 w-12 text-gray-300 mx-auto mb-2" />
-                                  <h3 className="font-medium text-gray-600">Sample Data</h3>
+                              {loadingSampleData[tableName] ? (
+                                <div className="text-center py-8">
+                                  <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                                  <p className="text-gray-500">Loading sample data...</p>
                                 </div>
-                                <p className="text-sm">
-                                  Sample data preview is not available in the current analysis format.
-                                </p>
-                                <p className="text-xs text-gray-400 mt-2">
-                                  Check the column metrics above for detailed statistics.
-                                </p>
-                              </div>
+                              ) : tableSampleData[tableName] ? (
+                                <div className="space-y-4">
+                                  <div className="flex items-center justify-between">
+                                    <div className="text-sm text-gray-600">
+                                      Showing {tableSampleData[tableName].preview_rows || 0} of {tableSampleData[tableName].total_rows?.toLocaleString() || 0} rows
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => fetchTableSampleData(tableName)}
+                                      className="border-green-300 hover:bg-green-50 text-green-700"
+                                    >
+                                      <Database className="h-4 w-4 mr-1" />
+                                      Refresh
+                                    </Button>
+                                  </div>
+                                  
+                                  <div className="border border-green-200 rounded-lg overflow-hidden">
+                                    <div className="max-h-96 overflow-auto">
+                                      <table className="w-full text-sm">
+                                        <thead className="bg-green-50 sticky top-0">
+                                          <tr>
+                                            {(tableSampleData[tableName].columns || []).map((column: string) => (
+                                              <th key={column} className="px-3 py-2 text-left font-medium text-green-800 border-b border-green-200">
+                                                <div>
+                                                  <span className="block">{column}</span>
+                                                  <span className="text-xs text-green-600 font-normal">
+                                                    {tableSampleData[tableName].data_types?.[column] || 'unknown'}
+                                                  </span>
+                                                </div>
+                                              </th>
+                                            ))}
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {(tableSampleData[tableName].preview_data || []).map((row: any, index: number) => (
+                                            <tr key={index} className={index % 2 === 0 ? 'bg-white' : 'bg-green-25'}>
+                                              {(tableSampleData[tableName].columns || []).map((column: string) => (
+                                                <td key={column} className="px-3 py-2 border-b border-green-100">
+                                                  <span className="text-gray-700">
+                                                    {row[column] !== null && row[column] !== undefined 
+                                                      ? String(row[column]) 
+                                                      : <span className="text-gray-400 italic">null</span>
+                                                    }
+                                                  </span>
+                                                </td>
+                                              ))}
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Data Types Legend */}
+                                  <div className="bg-green-50 p-3 rounded-lg">
+                                    <h4 className="font-medium text-green-800 mb-2">Column Data Types</h4>
+                                    <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                                      {Object.entries(tableSampleData[tableName].data_types || {}).map(([column, type]) => (
+                                        <div key={column} className="text-xs">
+                                          <span className="font-medium text-green-700">{column}:</span>
+                                          <span className="text-green-600 ml-1">{String(type)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-center py-8 text-gray-500">
+                                  <div className="mb-4">
+                                    <Database className="h-12 w-12 text-gray-300 mx-auto mb-2" />
+                                    <h3 className="font-medium text-gray-600">Sample Data</h3>
+                                  </div>
+                                  <p className="text-sm mb-4">
+                                    Click the button below to load sample data from this table.
+                                  </p>
+                                  <Button
+                                    onClick={() => fetchTableSampleData(tableName)}
+                                    className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+                                  >
+                                    <Database className="mr-2 h-4 w-4" />
+                                    Load Sample Data
+                                  </Button>
+                                </div>
+                              )}
                             </TabsContent>
                           </Tabs>
                         </CardContent>
@@ -829,7 +978,7 @@ export function DataQualityEngine({
                 <CardTitle className="text-sm font-medium capitalize text-gray-700">{key}</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className={`text-3xl font-bold mb-2 ${getScoreColor(value)}`}>{value}%</div>
+                <div className={`text-3xl font-bold mb-2 ${getScoreColor(value)}`}>{typeof value === 'number' ? value.toFixed(2) : value}%</div>
                 <div className="relative mb-3">
                   <Progress value={value} className="h-2 bg-gray-100" />
                   <div
@@ -882,7 +1031,7 @@ export function DataQualityEngine({
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="flex items-center gap-6">
-                    <div className={`text-4xl font-bold ${getScoreColor(result.score)}`}>{result.score}%</div>
+                    <div className={`text-4xl font-bold ${getScoreColor(result.score)}`}>{typeof result.score === 'number' ? result.score.toFixed(2) : result.score}%</div>
                     <div className="flex items-center gap-3">
                       {getScoreBadge(result.score)}
                       <div className="flex items-center gap-1">
