@@ -94,7 +94,7 @@ export function DataConnector({ onDataConnected, setIsLoading, onComplete, isCom
   const [password, setPassword] = useState("dontgo")
   const [host, setHost] = useState("localhost")
   const [port, setPort] = useState("3306")
-  const [databaseName, setDatabaseName] = useState("covoit_db")
+  const [databaseName, setDatabaseName] = useState("BankDB")
   const [isConnecting, setIsConnecting] = useState(false)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [connections, setConnections] = useState<Connection[]>([])
